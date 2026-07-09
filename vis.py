@@ -36,3 +36,38 @@ def feature_analysis(df):
     plt.show()
 
 
+# 可视化训练损失曲线
+def plot_loss_curve(train_losses, title="Training Loss"):
+    if isinstance(train_losses, dict):
+        plt.figure(figsize=(10, 6))
+        for name, losses in train_losses.items():
+            plt.plot(losses, label=name)
+    else:
+        plt.figure(figsize=(10, 6))
+        plt.plot(train_losses, label="Training Loss")
+    
+    plt.title(title)
+    plt.xlabel("Epoch")
+    plt.ylabel("Loss")
+    plt.legend()
+    plt.grid(True)
+    plt.show()
+
+# 可视化模型预测结果
+def plot_prediction(gt, preds):
+    plt.figure(figsize=(12, 6))
+    plt.plot(gt[:, 0], label="True Value", linewidth=1.5, color='green')
+    
+    if isinstance(preds, dict):
+        for name, pred in preds.items():
+            plt.plot(pred[:, 0], label=f"{name} Prediction", linewidth=1.5)
+    else:
+        plt.plot(preds[:, 0], label="Prediction", linewidth=1.5)    
+    
+    plt.title("Prediction vs Ground Truth")
+    plt.xlabel("Time")
+    plt.ylabel("Global Active Power")
+    plt.legend()
+    plt.grid(True)
+    plt.show()
+

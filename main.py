@@ -1,11 +1,11 @@
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-from data_analysis import plot_features, feature_analysis
 import torch
 from torch import nn
 from IPython import embed
 
+from vis import plot_features, feature_analysis, plot_loss_curve, plot_prediction
 from dataset import uci_dataset
 from baseline.ml_model import arima_model, xgb_model, eval
 from baseline.rnn import GRU, LSTM
@@ -37,41 +37,6 @@ def dataset():
     # plt.show()
 
     return df, dfd, dfh
-
-# 可视化训练损失曲线
-def plot_loss_curve(train_losses, title="Training Loss"):
-    if isinstance(train_losses, dict):
-        plt.figure(figsize=(10, 6))
-        for name, losses in train_losses.items():
-            plt.plot(losses, label=name)
-    else:
-        plt.figure(figsize=(10, 6))
-        plt.plot(train_losses, label="Training Loss")
-    
-    plt.title(title)
-    plt.xlabel("Epoch")
-    plt.ylabel("Loss")
-    plt.legend()
-    plt.grid(True)
-    plt.show()
-
-# 可视化模型预测结果
-def plot_prediction(gt, preds):
-    plt.figure(figsize=(12, 6))
-    plt.plot(gt[:, 0], label="True Value", linewidth=1.5, color='green')
-    
-    if isinstance(preds, dict):
-        for name, pred in preds.items():
-            plt.plot(pred[:, 0], label=f"{name} Prediction", linewidth=1.5)
-    else:
-        plt.plot(preds[:, 0], label="Prediction", linewidth=1.5)    
-    
-    plt.title("Prediction vs Ground Truth")
-    plt.xlabel("Time")
-    plt.ylabel("Global Active Power")
-    plt.legend()
-    plt.grid(True)
-    plt.show()
 
 # 训练模型
 def train(data, model):
@@ -126,18 +91,6 @@ if __name__ == '__main__':
     df, dfd, dfh = dataset()
     train_df, test_df = dfd[:'2009'], dfd['2010':]
     
-    # 可视化特征随时间变化趋势
-    # plot_features(df)
-    # feature_analysis(df)
-    
-    # arima xgboost训练及测试
-    # ari = arima_model(dfd)
-    # xgb = xgb_model(dfd)
-
-    # 找到数据的周期
-    # periods = find_period(dfd)
-    # print(periods)
-
     # 模型训练、测试、可视化
     models = {
         # 'TCN': TCN(),
