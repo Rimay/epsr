@@ -5,98 +5,165 @@ from torch.nn import functional as F
 from IPython import embed
 
 
-# 找到数据的周期
-def find_period(data, top_k=2):
-    fft = np.fft.rfft(data)
-    power = np.abs(fft)
-    power[0] = 0
-    
-    idx = np.argsort(power)[-top_k:]
-    periods = []
-    n = len(data)
-    for i in idx:
-        p = int(n / i)
-        if p > 1:
-            periods.append(p)
-    periods = sorted(list(set(periods)))
-    # embed()
-    return periods
+# -----------------   自适应发现数据周期 ---------------------
+class adaptive_period_finder:
+    def __init__(self, top_k=2):
+        self.top_k = top_k
 
-class Casual1d(nn.Module):
-    def __init__(self, in_ch, out_ch, k=3, d=1):
+    def __call__(self, x):
+        x = x.detach().cpu().numpy()
+        x = x.mean(axis=0).squeeze()
+        fft = np.fft.rfft(x)
+        power = np.abs(fft)
+        power[0] = 0
+        
+        idx = np.argsort(power)[-self.top_k:]
+        periods = []
+        N = len(x)
+        for i in idx:
+            if i!= 0:
+                p = int(N / i)
+                if p > 1:
+                    periods.append(p)
+        return sorted(list(set(periods)))
+
+# -----------------   Trend-seasonal-residual 分解 ---------------------
+# 移动平均趋势分解
+# 输入 (B, C, T) 
+# 输出 (B, C, T)
+class trend_block(nn.Module):
+    def __init__(self, k=25):
         super().__init__()
-        self.pad = (k - 1) * d
-        self.conv = nn.Conv1d(in_ch, out_ch, k, dilation=d)
+        self.pool = nn.AvgPool1d(kernel_size=k, stride=1, padding=k//2)
 
     def forward(self, x):
-        x = F.pad(x, (self.pad, 0))
-        return self.conv(x)
+        return self.pool(x)
 
-class mp_block(nn.Module):
-    def __init__(self, in_ch, out_ch, k=3, periods=[1, 7,365]):
+# 季节性分解
+# 输入 (B, C, T) 
+# 输出 (B, C, T)
+class seasonal_block(nn.Module):
+    def __init__(self, periods=[1, 7, 365], hidden=32):
         super().__init__()
         self.convs = nn.ModuleList()
         for p in periods:
-            self.convs.append(Casual1d(in_ch, out_ch, k, d=p))
-        self.fusion = nn.Conv1d(len(periods) * out_ch, out_ch, 1)        
+            self.convs.append(
+                nn.Sequential(
+                    nn.Conv1d(1, hidden, kernel_size=3, dilation=p, padding=p),
+                    nn.ReLU()
+                )
+            )
+        self.fusion = nn.Conv1d(len(periods) * hidden, 1, kernel_size=1)
 
     def forward(self, x):
         feats = []
         for conv in self.convs:
-            feats.append(torch.relu(conv(x)))
-        x = torch.cat(feats, dim=1)
-        x = self.fusion(x)
-        return x
-        
-class cycle_residual(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.a = nn.Parameter(torch.tensor(1.0))
-        self.b = nn.Parameter(torch.tensor(0.5))
-        self.c = nn.Parameter(torch.tensor(0.3))
+            feats.append(conv(x))
+        out = torch.cat(feats, dim=1)
+        out = self.fusion(out)
+        return out
 
-    def forward(self, x, fx):
-        out = self.a * x
-        seq_len = x.shape[-1]
-        if seq_len > 7:
-            x1 = F.pad(x[..., :-7], (7,0))
-            out = out + self.b * x1
-        if seq_len > 365:
-            x2 = F.pad(x[..., :-365], (365,0))
-            out = out + self.c * x2
-        return out + fx
-
-class apcr_block(nn.Module):
-    def __init__(self, in_ch, out_ch):
+# 自适应周期(Seasonal)、趋势(Trend)、残差(Residual)分解
+class APTR_decomposition(nn.Module):
+    def __init__(self, periods=[1, 7, 365]):
         super().__init__()
-        self.mp = mp_block(in_ch, out_ch, k=3, periods=[1, 7,365])
-        self.cycle = cycle_residual()
-        self.relu = nn.ReLU()
-        self.down = (nn.Conv1d(in_ch, out_ch, 1) if in_ch != out_ch else None)
-    
+        self.trend = trend_block(k=25)
+        self.seasonal = seasonal_block(periods=periods)
+
+    # x (B, C, T)
     def forward(self, x):
-        res = x
-        if self.down:
-            res = self.down(res)
-        fx = self.mp(x)
-        x = self.cycle(res, fx)
+        trend = self.trend(x)
+        seasonal = self.seasonal(x)
+        residual = x - trend - seasonal
+        return (trend, seasonal, residual)
+
+# 周期融合
+class period_fusion(nn.Module):
+    def __init__(self, dim=32):
+        super().__init__()
+        self.weight = nn.Sequential(
+            nn.Linear(dim, 16),
+            nn.ReLU(),
+            nn.Linear(16, 1)
+        )
+
+    def forward(self, feats):
+        weights = []
+        for f in feats:
+            w = self.weight(f.mean(dim=-1))
+            weights.append(w)
+        weights = torch.softmax(torch.cat(weights, dim=1), dim=1)
+        out = 0
+        for i, f in enumerate(feats):
+            w = weights[:, i:i+1]
+            out += f * w.unsqueeze(-1)
+        return out
+
+# -----------------   temporal encoder (tcn / transformer / ...) ---------------------
+class tcn_layer(nn.Module):
+    def __init__(self, in_ch, out_ch, dilation):
+        super().__init__()
+        self.conv = nn.Conv1d(in_ch, out_ch, kernel_size=3, dilation=dilation, padding=dilation)
+        self.bn = nn.BatchNorm1d(out_ch)
+        self.relu = nn.ReLU()
+
+    def forward(self, x):
+        x = self.conv(x)
+        x = self.bn(x)
         return self.relu(x)
-    
-class APCR_TCN(nn.Module):
+
+# S/T/R 时序编码器
+# 输入 (B, C, T) 
+# 输出 (B, 32, T)
+class temporal_encoder(nn.Module):
     def __init__(self):
         super().__init__()
-        self.blocks = nn.Sequential(
-            apcr_block(1, 16),
-            apcr_block(16, 16),
-            apcr_block(16, 16)
-        )
-        self.head = nn.Sequential(
-            nn.Linear(16, 32),
+        self.encoder = nn.Sequential(
+            tcn_layer(1, 32, 1),
+            tcn_layer(32, 32, 4),
+            tcn_layer(32, 32, 8)
+        )    
+    def forward(self, x):
+        return self.encoder(x)
+    
+# -----------------  prediction head  ---------------------
+# 输入 (B, 32, T) 
+# 输出 (B, 1, T)
+class prediction_head(nn.Module):
+    def __init__(self, hidden=32, output_len=1):
+        super().__init__()
+        self.fc = nn.Sequential(
+            nn.Linear(hidden, 64),
             nn.ReLU(),
-            nn.Linear(32, 1)
+            nn.Linear(64, output_len)
         )
+    def forward(self, x):
+        out = self.fc(x)
+        return out
+
+# -----------------  完整 Net  ---------------------
+class net(nn.Module):
+    def __init__(self, periods=[1, 7, 365], output_len=1):
+        super().__init__()
+        self.decomposition = APTR_decomposition(periods=periods)
+        self.trend_encoder = temporal_encoder()
+        self.seasonal_encoder = temporal_encoder()
+        self.residual_encoder = temporal_encoder()
+        self.fusion = period_fusion(dim=32)
+        
+        self.head = prediction_head(hidden=32, output_len=output_len)
+
     def forward(self, x):
         x = x[:, :, None].permute(0, 2, 1)
-        x = self.blocks(x)
-        x = x[:, :, -1]
-        return self.head(x)
+
+        trend, seasonal, residual = self.decomposition(x)
+        h1 = self.trend_encoder(trend)
+        h2 = self.seasonal_encoder(seasonal)
+        h3 = self.residual_encoder(residual)
+        h = self.fusion([h1, h2, h3])
+        h = h[:, :, -1]
+
+        y = self.head(h)
+        return y
+
+

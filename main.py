@@ -11,7 +11,8 @@ from baseline.ml_model import arima_model, xgb_model, eval
 from baseline.rnn import GRU, LSTM
 from baseline.tcn import TCN
 from baseline.delaynet import DelayNet
-from apcr_tcn import find_period, APCR_TCN
+from model import net
+
 
 
 # 加载数据集
@@ -96,8 +97,9 @@ if __name__ == '__main__':
         # 'TCN': TCN(),
         # 'APCR_TCN': APCR_TCN(),
         # 'DelayNet': DelayNet(),
-        'GRU': GRU(input_dim=1, hidden_dim=64, num_layers=2, pred_len=1),
-        'LSTM': LSTM(input_dim=1, hidden_dim=64, num_layers=2, pred_len=1)
+        # 'GRU': GRU(input_dim=1, hidden_dim=64, num_layers=2, pred_len=1),
+        # 'LSTM': LSTM(input_dim=1, hidden_dim=64, num_layers=2, pred_len=1)
+        'net': net()
     }
     train_losses = {}
     preds = {}
