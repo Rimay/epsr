@@ -1,7 +1,6 @@
 import numpy as np
 import torch
 from torch import nn
-from torch.nn import functional as F
 from IPython import embed
 
 
@@ -77,6 +76,8 @@ class APTR_decomposition(nn.Module):
         residual = x - trend - seasonal
         return (trend, seasonal, residual)
 
+
+
 # 周期融合
 class period_fusion(nn.Module):
     def __init__(self, dim=32):
@@ -140,9 +141,9 @@ class prediction_head(nn.Module):
     def forward(self, x):
         out = self.fc(x)
         return out
-
+    
 # -----------------  完整 Net  ---------------------
-class net(nn.Module):
+class APCR_TCN(nn.Module):
     def __init__(self, periods=[1, 7, 365], output_len=1):
         super().__init__()
         self.decomposition = APTR_decomposition(periods=periods)
