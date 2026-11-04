@@ -248,8 +248,8 @@ def main():
     )
     parser.add_argument("--input", default=r"C:\Users\Administrator\Desktop\EPSR\data\GEFCom2014\Load",
                         help="GEFCom2014 Load 根目录（包含 Task 1..15 文件夹）")
-    parser.add_argument("--output", default=r"C:\Users\Administrator\Desktop\EPSR\data\processed\gefcom2014",
-                        help="输出目录")
+    parser.add_argument("--output", default=r"C:\Users\Administrator\Desktop\EPSR\data\GEFCom2014\Load\clean",
+                        help="输出目录（dataset.py 的 load_GEFCom2014 从这里读取）")
     args = parser.parse_args()
 
     input_dir = Path(args.input).expanduser().resolve()

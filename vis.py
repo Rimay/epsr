@@ -3,6 +3,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 from statsmodels.tsa.seasonal import seasonal_decompose
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
 # 可视化特征随时间变化趋势
 def plot_features(df):
@@ -55,14 +56,18 @@ def plot_loss_curve(train_losses, title="Training Loss"):
 
 # 可视化模型预测结果
 def plot_prediction(gt, preds):
+    # gt 可能是 dict（{模型名: 真实值}）或单个数组；
+    # 所有模型共用同一份真实值，取第一个即可
+    true = np.asarray(next(iter(gt.values())) if isinstance(gt, dict) else gt).reshape(-1)
+
     plt.figure(figsize=(12, 6))
-    plt.plot(gt[:, 0], label="True Value", linewidth=1.5, color='green')
+    plt.plot(true, label="True Value", linewidth=1.5, color='green')
     
     if isinstance(preds, dict):
         for name, pred in preds.items():
-            plt.plot(pred[:, 0], label=f"{name} Prediction", linewidth=1.5)
+            plt.plot(np.asarray(pred).reshape(-1), label=f"{name} Prediction", linewidth=1.5)
     else:
-        plt.plot(preds[:, 0], label="Prediction", linewidth=1.5)    
+        plt.plot(np.asarray(preds).reshape(-1), label="Prediction", linewidth=1.5)    
     
     plt.title("Prediction vs Ground Truth")
     plt.xlabel("Time")
@@ -71,3 +76,21 @@ def plot_prediction(gt, preds):
     plt.grid(True)
     plt.show()
 
+def eval(test, preds):
+    mae = {}
+    mse = {}
+    rmse = {}
+    r2 = {}
+    for name, pred in preds.items():
+        # test 可能是 dict（{模型名: 真实值}）或单个数组
+        true = np.asarray(test[name] if isinstance(test, dict) else test).reshape(-1)
+        p = np.asarray(pred).reshape(-1)
+        print(f"【Model】: {name}")
+        mae[name] = mean_absolute_error(true, p)
+        mse[name] = mean_squared_error(true, p)
+        rmse[name] = np.sqrt(mse[name])
+        r2[name] = r2_score(true, p) 
+        print(f"MAE: {mae[name]:.4f}")
+        print(f"MSE: {mse[name]:.4f}")
+        print(f"RMSE: {rmse[name]:.4f}")
+        print(f"R²: {r2[name]:.4f}")

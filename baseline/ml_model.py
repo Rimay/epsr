@@ -4,25 +4,12 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from statsmodels.tsa.arima.model import ARIMA
 import xgboost as xgb
+from vis import eval
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from IPython import embed
 
 
-def eval(test, preds):
-    mae = {}
-    mse = {}
-    rmse = {}
-    r2 = {}
-    for name, pred in preds.items():
-        print(f"【Model】: {name}")
-        mae[name] = mean_absolute_error(test, pred)
-        mse[name] = mean_squared_error(test, pred)
-        rmse[name] = np.sqrt(mse[name])
-        r2[name] = r2_score(test, pred) 
-        print(f"MAE: {mae[name]:.4f}")
-        print(f"MSE: {mse[name]:.4f}")
-        print(f"RMSE: {rmse[name]:.4f}")
-        print(f"R²: {r2[name]:.4f}")
+
 
 # 定义ARIMA模型, 包括模型训练, 模型评估, 模型可视化
 def arima_model(dfd):

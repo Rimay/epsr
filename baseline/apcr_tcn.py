@@ -144,7 +144,7 @@ class prediction_head(nn.Module):
     
 # -----------------  完整 Net  ---------------------
 class APCR_TCN(nn.Module):
-    def __init__(self, periods=[1, 7, 365], output_len=1):
+    def __init__(self, periods=[1, 7], output_len=1):
         super().__init__()
         self.decomposition = APTR_decomposition(periods=periods)
         self.trend_encoder = temporal_encoder()
