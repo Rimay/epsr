@@ -64,7 +64,8 @@ class RASATTCN(nn.Module):
 
         # ---- 可靠性标量 R_t ----
         r_in = torch.cat([r_raw, discrepancy, similarity, S_t, volatility], dim=-1)   # [B, 16+4] = [B, 20]
-        R_t = torch.sigmoid(self.reliability_net(r_in))                               # [B, 1]
+        # 2*sigmoid 使 R_t 以 1 为中心（(0,2)），避免恒小于 1 时对周期嵌入的乘性衰减
+        R_t = 2 * torch.sigmoid(self.reliability_net(r_in))                          # [B, 1]
 
         # ---- 周期嵌入按可靠性自适应缩放：广播 [B,1] * [B,16] -> [B, 16] ----
         p_adapt = R_t * p_emb

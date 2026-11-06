@@ -16,7 +16,7 @@ from baseline.apcr_tcn import APCR_TCN
 
 
 # ds_name = ['uci', 'GEFCom2014']
-# ══ 预测粒度：'h'=小时级(seq_len=168)，'d'=天级(seq_len=7) ══
+# 预测粒度：'h'=小时级(seq_len=168)，'d'=天级(seq_len=7)
 FREQ = 'd'
 SEQ_LEN = {'h': 168, 'd': 7}[FREQ]      # 天级可试 7(一周) / 14(两周)
 P_COLS  = {'h': ['lag24_z', 'lag168_z'], 'd': ['lag1_z', 'lag7_z']}[FREQ]
@@ -28,15 +28,17 @@ def forward_model(model, x, p, meta):
         return model(x, p, meta)['pred']
     return model(x[:, :, 0])
 
-# 训练模型，ds：切分后的训练集子集
-def train(ds, model):
+# 训练模型，ds：切分后的训练集子集，va_ds：验证集（用于早停）
+def train(ds, va_ds, model, epochs=100, patience=15):
     loader = torch.utils.data.DataLoader(ds, batch_size=32, shuffle=True)
+    val_loader = torch.utils.data.DataLoader(va_ds, batch_size=32, shuffle=False)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model.to(device)
     opt = torch.optim.Adam(model.parameters(), lr=0.001)
     crt = nn.MSELoss()
 
-    epochs, train_loss = 100, []
+    train_loss = []
+    best_val, best_epoch, wait, best_state = float('inf'), -1, 0, None
     for e in range(epochs):
         model.train()
         total_loss = 0.0
@@ -51,7 +53,30 @@ def train(ds, model):
             total_loss += loss.item()
         total_loss /= len(loader) 
         train_loss.append(total_loss)
-        print(f'Epoch {e}, Loss: {total_loss:.4f}')         # 打印每个epoch的损失
+
+        # 验证损失用于早停，保留最优权重：固定跑 100 轮必然过拟合
+        model.eval()
+        val_loss = 0.0
+        with torch.no_grad():
+            for x, y, p, meta in val_loader:
+                x, y, p, meta = x.to(device), y.to(device), p.to(device), meta.to(device)
+                val_loss += crt(forward_model(model, x, p, meta), y.squeeze(-1)).item()
+        val_loss /= len(val_loader)
+
+        if val_loss < best_val - 1e-4:
+            best_val, best_epoch, wait = val_loss, e, 0
+            best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+        else:
+            wait += 1
+
+        if e % 10 == 0:
+            print(f'Epoch {e}, Train Loss: {total_loss:.4f}, Val Loss: {val_loss:.4f}')
+        if wait >= patience:
+            print(f'Early stopping at epoch {e}, best val loss {best_val:.4f} @ epoch {best_epoch}')
+            break
+
+    if best_state is not None:
+        model.load_state_dict(best_state)
     return model, train_loss
 
 # 测试模型，ds：切分后的测试集子集
@@ -96,7 +121,7 @@ if __name__ == '__main__':
     # embed()
     for name, model in models.items():
         print(f"Training {name}...")
-        model, train_losses[name] = train(tr_ds, model)
+        model, train_losses[name] = train(tr_ds, va_ds, model)
         print(f"Testing {name}...")
         gt[name], preds[name] = test(te_ds, model)
     

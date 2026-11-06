@@ -221,5 +221,13 @@ def make_frame(df, freq='h', fit_frac=0.7):
     f['similarity'] = sim
     f['discrepancy'] = discrepancy
     f['r_raw'] = r_raw
+
+    # meta 描述符标准化：统计量只在训练段拟合，避免泄露；
+    # discrepancy 长尾（可到 10+）先 log1p 压缩，再与其余描述符统一到同一量纲
+    meta_cols = ['r_raw', 'discrepancy', 'similarity', 'volatility_z']
+    f['discrepancy'] = np.log1p(f['discrepancy'])
+    meta_mean = f.iloc[:n_fit][meta_cols].mean()
+    meta_std = f.iloc[:n_fit][meta_cols].std().replace(0, 1)
+    f[meta_cols] = (f[meta_cols] - meta_mean) / meta_std
     return f, features, y_mean, y_std, thresh
 
