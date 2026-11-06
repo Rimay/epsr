@@ -1,136 +1,191 @@
+import random
 import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
 import torch
 from torch import nn
-from IPython import embed
 
-from vis import plot_features, feature_analysis, plot_loss_curve, plot_prediction, eval
+from vis import plot_loss_curve, plot_prediction, eval
 from dataset import load_df, window_dataset, make_frame, split_dataset
 from model import RASATTCN
-from baseline.ml_model import arima_model, xgb_model
 from baseline.rnn import GRU, LSTM
 from baseline.tcn import TCN
 from baseline.delaynet import DelayNet
 from baseline.apcr_tcn import APCR_TCN
 
+# 日级单步预测：过去 7 个自然日预测下一日
+FREQ = "d"
+SEQ_LEN = 7
+P_COLS = ["lag1_z", "lag7_z"]
+TRAIN_FRAC = 0.70
+N_SEEDS = 5                 # 正式实验建议 5 次；调试时可临时设为 1
+EPOCHS = 100
+PATIENCE = 15
+BATCH_SIZE = 32
+LEARNING_RATE = 1e-3
+DATASET_NAME = "uci"
 
-# ds_name = ['uci', 'GEFCom2014']
-# 预测粒度：'h'=小时级(seq_len=168)，'d'=天级(seq_len=7)
-FREQ = 'd'
-SEQ_LEN = {'h': 168, 'd': 7}[FREQ]      # 天级可试 7(一周) / 14(两周)
-P_COLS  = {'h': ['lag24_z', 'lag168_z'], 'd': ['lag1_z', 'lag7_z']}[FREQ]
-TRAIN_FRAC = 0.7                        # 训练段比例：标准化统计量与切分边界共用
 
-# 统一前向调用：基线模型只用负荷序列（单通道 [B,L]），RASATTCN 额外需要周期 p 与 meta
+def set_seed(seed):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+
 def forward_model(model, x, p, meta):
     if isinstance(model, RASATTCN):
-        return model(x, p, meta)['pred']
+        return model(x, p, meta)
+    if isinstance(model, TCN) and model.net[0].conv1.conv.in_channels > 1:
+        return model(x)
+    # 其余原始基线保持单变量输入，避免悄悄改变既有基线定义
     return model(x[:, :, 0])
 
-# 训练模型，ds：切分后的训练集子集，va_ds：验证集（用于早停）
-def train(ds, va_ds, model, epochs=100, patience=15):
-    loader = torch.utils.data.DataLoader(ds, batch_size=32, shuffle=True)
-    val_loader = torch.utils.data.DataLoader(va_ds, batch_size=32, shuffle=False)
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+def train(train_ds, val_ds, model):
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    train_loader = torch.utils.data.DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True)
+    val_loader = torch.utils.data.DataLoader(val_ds, batch_size=BATCH_SIZE, shuffle=False)
     model.to(device)
-    opt = torch.optim.Adam(model.parameters(), lr=0.001)
-    crt = nn.MSELoss()
+    optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
+    criterion = nn.MSELoss()
+    train_losses, val_losses = [], []
+    best_val, best_epoch, wait, best_state = float("inf"), -1, 0, None
 
-    train_loss = []
-    best_val, best_epoch, wait, best_state = float('inf'), -1, 0, None
-    for e in range(epochs):
+    for epoch in range(EPOCHS):
         model.train()
-        total_loss = 0.0
-        for x, y, p, meta in loader:
+        total = 0.0
+        for x, y, p, meta in train_loader:
             x, y, p, meta = x.to(device), y.to(device), p.to(device), meta.to(device)
-            opt.zero_grad()
-            pred = forward_model(model, x, p, meta)
-            # y 是 [B,1,1]、pred 是 [B,1]，直接 MSE 会广播成 [B,B,1]，必须 squeeze
-            loss = crt(pred, y.squeeze(-1))
+            optimizer.zero_grad()
+            out = forward_model(model, x, p, meta)
+            pred = out["pred"] if isinstance(out, dict) else out
+            loss = criterion(pred, y.squeeze(-1))
             loss.backward()
-            opt.step()  
-            total_loss += loss.item()
-        total_loss /= len(loader) 
-        train_loss.append(total_loss)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            optimizer.step()
+            total += loss.item()
+        train_loss = total / max(1, len(train_loader))
+        train_losses.append(train_loss)
 
-        # 验证损失用于早停，保留最优权重：固定跑 100 轮必然过拟合
         model.eval()
-        val_loss = 0.0
+        val_total = 0.0
         with torch.no_grad():
             for x, y, p, meta in val_loader:
                 x, y, p, meta = x.to(device), y.to(device), p.to(device), meta.to(device)
-                val_loss += crt(forward_model(model, x, p, meta), y.squeeze(-1)).item()
-        val_loss /= len(val_loader)
+                out = forward_model(model, x, p, meta)
+                pred = out["pred"] if isinstance(out, dict) else out
+                val_total += criterion(pred, y.squeeze(-1)).item()
+        val_loss = val_total / max(1, len(val_loader))
+        val_losses.append(val_loss)
 
-        if val_loss < best_val - 1e-4:
-            best_val, best_epoch, wait = val_loss, e, 0
+        if val_loss < best_val - 1e-5:
+            best_val, best_epoch, wait = val_loss, epoch + 1, 0
             best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
         else:
             wait += 1
-
-        if e % 10 == 0:
-            print(f'Epoch {e}, Train Loss: {total_loss:.4f}, Val Loss: {val_loss:.4f}')
-        if wait >= patience:
-            print(f'Early stopping at epoch {e}, best val loss {best_val:.4f} @ epoch {best_epoch}')
+        if epoch % 10 == 0:
+            print(f"Epoch {epoch+1:03d}: train={train_loss:.5f}, val={val_loss:.5f}")
+        if wait >= PATIENCE:
+            print(f"Early stop; best epoch={best_epoch}, val_loss={best_val:.5f}")
             break
 
     if best_state is not None:
         model.load_state_dict(best_state)
-    return model, train_loss
+    return model, train_losses, val_losses, best_epoch
 
-# 测试模型，ds：切分后的测试集子集
-def test(ds, model):
-    loader = torch.utils.data.DataLoader(ds, batch_size=32, shuffle=False)
-    model.eval()
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    model.to(device)
+
+def test(test_ds, model):
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    loader = torch.utils.data.DataLoader(test_ds, batch_size=BATCH_SIZE, shuffle=False)
+    model.to(device).eval()
+    truths, predictions = [], []
+    diagnostic = {k: [] for k in ["y_base", "R_t", "G_t", "delta"]}
     with torch.no_grad():
-        true_list, pred_list = [], []
         for x, y, p, meta in loader:
             x, y, p, meta = x.to(device), y.to(device), p.to(device), meta.to(device)
-            pred = forward_model(model, x, p, meta)
-            true_list.append(y.cpu().numpy())
-            pred_list.append(pred.cpu().numpy())
-    gt = np.concatenate(true_list, axis=0)
-    pred = np.concatenate(pred_list, axis=0)
-    return gt, pred
+            out = forward_model(model, x, p, meta)
+            pred = out["pred"] if isinstance(out, dict) else out
+            truths.append(y.cpu().numpy().reshape(-1))
+            predictions.append(pred.cpu().numpy().reshape(-1))
+            if isinstance(out, dict):
+                for key in diagnostic:
+                    diagnostic[key].append(out[key].cpu().numpy().reshape(-1))
+    truth = np.concatenate(truths)
+    prediction = np.concatenate(predictions)
+    diagnostics = {k: np.concatenate(v) for k, v in diagnostic.items() if v}
+    return truth, prediction, diagnostics
 
-if __name__ == '__main__':
-    print("Loading dataset...")
-    df, dfd, dfh = load_df(ds_name='uci')
-    src = dfh if FREQ == 'h' else dfd        # 天级用 dfd
-    f, features, y_mean, y_std, thresh = make_frame(src, freq=FREQ, fit_frac=TRAIN_FRAC)
 
-    # 按时间顺序切分，避免训练集混入未来样本
-    ds = window_dataset(f, features, seq_len=SEQ_LEN, p_cols=P_COLS)
-    tr_ds, va_ds, te_ds = split_dataset(ds, ratios=(TRAIN_FRAC, 0.15, 0.15))
-    print(f"样本数 total={len(ds)}, train={len(tr_ds)}, val={len(va_ds)}, test={len(te_ds)}")
-    
-    # 模型训练、测试、可视化
-    models = {
-        'TCN': TCN(),
-        'APCR_TCN': APCR_TCN(),
-        'DelayNet': DelayNet(),
-        'GRU': GRU(input_dim=1, hidden_dim=64, num_layers=2, pred_len=1),
-        'LSTM': LSTM(input_dim=1, hidden_dim=64, num_layers=2, pred_len=1),
-        "RASAT_TCN": RASATTCN(in_dim=len(features)) # in_dim 跟随特征数，避免硬编码 8 与实际列数不一致
+def build_models(in_dim):
+    return {
+        "TCN": lambda: TCN(in_ch=1),
+        "Multivariate_TCN": lambda: TCN(in_ch=in_dim),
+        "APCR_TCN": lambda: APCR_TCN(),
+        "DelayNet": lambda: DelayNet(),
+        "GRU": lambda: GRU(input_dim=1, hidden_dim=64, num_layers=2, pred_len=1),
+        "LSTM": lambda: LSTM(input_dim=1, hidden_dim=64, num_layers=2, pred_len=1),
+        "RASAT_TCN": lambda: RASATTCN(in_dim=in_dim, variant="full"),
+        "RASAT_no_reliability": lambda: RASATTCN(in_dim=in_dim, variant="no_reliability"),
+        "RASAT_no_gate": lambda: RASATTCN(in_dim=in_dim, variant="no_gate"),
+        "RASAT_no_periodic": lambda: RASATTCN(in_dim=in_dim, variant="no_periodic"),
     }
-    train_losses, preds, gt = {}, {}, {}
-    print("Training models...")
-    # embed()
-    for name, model in models.items():
-        print(f"Training {name}...")
-        model, train_losses[name] = train(tr_ds, va_ds, model)
-        print(f"Testing {name}...")
-        gt[name], preds[name] = test(te_ds, model)
-    
-    print("Plotting loss curve...")
-    plot_loss_curve(train_losses, title='Train Loss Comparison')    
-    
-    print("Plotting prediction...")
-    plot_prediction(gt, preds)
 
-    print("Evaluating models...")
-    eval(gt, preds)
 
+if __name__ == "__main__":
+    print(f"Loading {DATASET_NAME}, frequency={FREQ}")
+    _, daily, hourly = load_df(ds_name=DATASET_NAME)
+    source = hourly if FREQ == "h" else daily
+    frame, features, y_mean, y_std, thresholds = make_frame(
+        source, freq=FREQ, fit_frac=TRAIN_FRAC
+    )
+    dataset = window_dataset(frame, features, seq_len=SEQ_LEN, p_cols=P_COLS)
+    train_ds, val_ds, test_ds = split_dataset(dataset, ratios=(0.70, 0.15, 0.15))
+    print(f"Samples total={len(dataset)}, train={len(train_ds)}, val={len(val_ds)}, test={len(test_ds)}")
+    print(f"Date span={source.index.min()} -> {source.index.max()}")
+    print(f"Target mean/std (train only)={y_mean:.5f}/{y_std:.5f}")
+    print(f"Thresholds={thresholds}")
+
+    factories = build_models(len(features))
+    seed_results, last_losses, mean_predictions, common_truth = {}, {}, {}, None
+    rasat_diagnostics = {}
+    for name, factory in factories.items():
+        seed_results[name] = []
+        seed_predictions = []
+        print(f"\n========== {name} ==========")
+        for seed in range(N_SEEDS):
+            set_seed(2026 + seed)
+            model = factory()
+            model, tr_loss, va_loss, best_epoch = train(train_ds, val_ds, model)
+            truth, prediction, diag = test(test_ds, model)
+            common_truth = truth
+            seed_predictions.append(prediction)
+            # Each run is evaluated in original physical units.
+            eval({name: truth}, {name: prediction}, y_mean=y_mean, y_std=y_std)
+            if diag:
+                rasat_diagnostics[name] = diag
+            seed_results[name].append((tr_loss[-1], va_loss[-1], best_epoch))
+            if seed == N_SEEDS - 1:
+                last_losses[name] = {"train": tr_loss, "val": va_loss}
+        mean_predictions[name] = np.mean(np.stack(seed_predictions), axis=0)
+        print(f"{name}: {N_SEEDS} seeds completed; best epochs={[x[2] for x in seed_results[name]]}")
+
+    print("\n===== Seed summary (best epoch; last train/val loss) =====")
+    for name, rows in seed_results.items():
+        print(name, rows)
+
+    print("\n===== RASAT internal diagnostics (standardized-space outputs) =====")
+    for name, diag in rasat_diagnostics.items():
+        print(name)
+        for key, values in diag.items():
+            print(f"  {key}: mean={values.mean():.4f}, std={values.std():.4f}, "
+                  f"min={values.min():.4f}, max={values.max():.4f}")
+        if "y_base" in diag:
+            base_mae = np.mean(np.abs(common_truth - diag["y_base"]))
+            final_mae = np.mean(np.abs(common_truth - mean_predictions[name]))
+            print(f"  y_base MAE(z)={base_mae:.4f}; final/seed-mean MAE(z)={final_mae:.4f}")
+
+    # 图中展示各随机种子预测均值，纵轴恢复到原始负荷单位
+    plot_prediction({"truth": common_truth}, mean_predictions, y_mean=y_mean, y_std=y_std)
+    # 训练曲线使用最后一个 seed，分别绘制 train/validation
+    plot_loss_curve({k: v["train"] for k, v in last_losses.items()}, title="Train Loss (last seed)")
+    plot_loss_curve({k: v["val"] for k, v in last_losses.items()}, title="Validation Loss (last seed)")
