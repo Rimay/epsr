@@ -36,7 +36,8 @@ class window_dataset(Dataset):
             if part.isna().any().any():
                 continue
             if isinstance(f.index, pd.DatetimeIndex):
-                expected = pd.date_range(f.index[i], periods=seq_len + pred_len, freq=pd.infer_freq(f.index[max(0, i-2):min(len(f.index), i+seq_len+pred_len+2)]) or None)
+                step = f.index[i + 1] - f.index[i]
+                expected = pd.date_range(f.index[i], periods=seq_len + pred_len, freq=step)
                 if len(expected) != len(part) or not expected.equals(part.index):
                     continue
             self.x.append(f.iloc[i:i + seq_len, f_ci].to_numpy())
