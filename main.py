@@ -162,6 +162,7 @@ if __name__ == "__main__":
             # Each run is evaluated in original physical units.
             eval({name: truth}, {name: prediction}, y_mean=y_mean, y_std=y_std)
             if diag:
+                diag["_final_pred"] = prediction.copy()
                 rasat_diagnostics[name] = diag
             seed_results[name].append((tr_loss[-1], va_loss[-1], best_epoch))
             if seed == N_SEEDS - 1:
@@ -177,11 +178,13 @@ if __name__ == "__main__":
     for name, diag in rasat_diagnostics.items():
         print(name)
         for key, values in diag.items():
+            if key == "_final_pred":
+                continue
             print(f"  {key}: mean={values.mean():.4f}, std={values.std():.4f}, "
                   f"min={values.min():.4f}, max={values.max():.4f}")
         if "y_base" in diag:
             base_mae = np.mean(np.abs(common_truth - diag["y_base"]))
-            final_mae = np.mean(np.abs(common_truth - mean_predictions[name]))
+            final_mae = np.mean(np.abs(common_truth - diag["_final_pred"]))
             print(f"  y_base MAE(z)={base_mae:.4f}; final/seed-mean MAE(z)={final_mae:.4f}")
 
     # 图中展示各随机种子预测均值，纵轴恢复到原始负荷单位
