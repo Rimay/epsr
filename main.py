@@ -146,10 +146,11 @@ if __name__ == "__main__":
     print(f"Thresholds={thresholds}")
 
     factories = build_models(len(features))
-    seed_results, last_losses, mean_predictions, common_truth = {}, {}, {}, None
+    seed_results, seed_metrics, last_losses, mean_predictions, common_truth = {}, {}, {}, {}, None
     rasat_diagnostics = {}
     for name, factory in factories.items():
         seed_results[name] = []
+        seed_metrics[name] = []
         seed_predictions = []
         print(f"\n========== {name} ==========")
         for seed in range(N_SEEDS):
@@ -160,7 +161,8 @@ if __name__ == "__main__":
             common_truth = truth
             seed_predictions.append(prediction)
             # Each run is evaluated in original physical units.
-            eval({name: truth}, {name: prediction}, y_mean=y_mean, y_std=y_std)
+            metric = eval({name: truth}, {name: prediction}, y_mean=y_mean, y_std=y_std)[name]
+            seed_metrics[name].append(metric)
             if diag:
                 diag["_final_pred"] = prediction.copy()
                 rasat_diagnostics[name] = diag
