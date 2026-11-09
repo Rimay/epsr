@@ -29,7 +29,7 @@ class TCNBlock(nn.Module):
 
 
 class RASATTCN(nn.Module):
-    def __init__(self, in_dim=8, hidden=32, state_dim=16, periodic_dim=16,
+    def __init__(self, in_dim=8, hidden=16, state_dim=16, periodic_dim=16,
                  kernel=2, dilations=(1, 2), dropout=0.1, variant="full"):
         super().__init__()
         if variant not in {"full", "no_reliability", "no_gate", "no_periodic"}:
@@ -40,14 +40,14 @@ class RASATTCN(nn.Module):
             blocks.append(TCNBlock(c, hidden, kernel, d, dropout))
             c = hidden
         self.tcn = nn.Sequential(*blocks)
-        self.state_encoder = nn.Sequential(nn.Linear(hidden, 32), nn.GELU(), nn.Linear(32, state_dim))
+        self.state_encoder = nn.Sequential(nn.Linear(hidden, 16), nn.GELU(), nn.Linear(16, state_dim))
         self.periodic_encoder = nn.Sequential(nn.Linear(2, 16), nn.GELU(), nn.Linear(16, periodic_dim))
-        self.reliability_net = nn.Sequential(nn.Linear(state_dim + 4, 32), nn.GELU(), nn.Linear(32, 1))
-        self.base_head = nn.Sequential(nn.Linear(hidden + state_dim + periodic_dim, 32), nn.GELU(),
-                                       nn.Dropout(dropout), nn.Linear(32, 1))
+        self.reliability_net = nn.Sequential(nn.Linear(state_dim + 4, 16), nn.GELU(), nn.Linear(16, 1))
+        self.base_head = nn.Sequential(nn.Linear(hidden + state_dim + periodic_dim, 16), nn.GELU(),
+                                       nn.Dropout(dropout), nn.Linear(16, 1))
         cd = hidden + state_dim + 2
-        self.gate_head = nn.Sequential(nn.Linear(cd, 32), nn.GELU(), nn.Linear(32, 1))
-        self.correction_head = nn.Sequential(nn.Linear(cd, 32), nn.GELU(), nn.Linear(32, 1))
+        self.gate_head = nn.Sequential(nn.Linear(cd, 16), nn.GELU(), nn.Linear(16, 1))
+        self.correction_head = nn.Sequential(nn.Linear(cd, 16), nn.GELU(), nn.Linear(16, 1))
 
     def forward(self, x, p, meta):
         p = p[:, -1, :]

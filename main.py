@@ -3,7 +3,7 @@ import numpy as np
 import torch
 from torch import nn
 
-from vis import plot_loss_curve, plot_prediction, eval
+from vis import plot_loss_curve, plot_pred, eval
 from dataset import load_df, window_dataset, make_frame, split_dataset
 from model import RASATTCN
 from baseline.rnn import GRU, LSTM
@@ -98,22 +98,22 @@ def test(test_ds, model):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     loader = torch.utils.data.DataLoader(test_ds, batch_size=BATCH_SIZE, shuffle=False)
     model.to(device).eval()
-    truths, predictions = [], []
+    gts, preds = [], []
     diagnostic = {k: [] for k in ["y_base", "R_t", "G_t", "delta"]}
     with torch.no_grad():
         for x, y, p, meta in loader:
             x, y, p, meta = x.to(device), y.to(device), p.to(device), meta.to(device)
             out = forward_model(model, x, p, meta)
             pred = out["pred"] if isinstance(out, dict) else out
-            truths.append(y.cpu().numpy().reshape(-1))
-            predictions.append(pred.cpu().numpy().reshape(-1))
+            gts.append(y.cpu().numpy().reshape(-1))
+            preds.append(pred.cpu().numpy().reshape(-1))
             if isinstance(out, dict):
                 for key in diagnostic:
                     diagnostic[key].append(out[key].cpu().numpy().reshape(-1))
-    truth = np.concatenate(truths)
-    prediction = np.concatenate(predictions)
+    gt = np.concatenate(gts)
+    pred = np.concatenate(preds)
     diagnostics = {k: np.concatenate(v) for k, v in diagnostic.items() if v}
-    return truth, prediction, diagnostics
+    return gt, pred, diagnostics
 
 
 def build_models(in_dim):
@@ -133,8 +133,8 @@ def build_models(in_dim):
 
 if __name__ == "__main__":
     print(f"Loading {DATASET_NAME}, frequency={FREQ}")
-    _, daily, hourly = load_df(ds_name=DATASET_NAME)
-    source = hourly if FREQ == "h" else daily
+    _, dfd, dfh = load_df(ds_name=DATASET_NAME)
+    source = dfh if FREQ == "h" else dfd
     frame, features, y_mean, y_std, thresholds = make_frame(
         source, freq=FREQ, fit_frac=TRAIN_FRAC
     )
@@ -146,30 +146,30 @@ if __name__ == "__main__":
     print(f"Thresholds={thresholds}")
 
     factories = build_models(len(features))
-    seed_results, seed_metrics, last_losses, mean_predictions, common_truth = {}, {}, {}, {}, None
+    seed_results, seed_metrics, last_losses, mean_preds, common_gt = {}, {}, {}, {}, None
     rasat_diagnostics = {}
     for name, factory in factories.items():
         seed_results[name] = []
         seed_metrics[name] = []
-        seed_predictions = []
+        seed_preds = []
         print(f"\n========== {name} ==========")
         for seed in range(N_SEEDS):
             set_seed(2026 + seed)
             model = factory()
             model, tr_loss, va_loss, best_epoch = train(train_ds, val_ds, model)
-            truth, prediction, diag = test(test_ds, model)
-            common_truth = truth
-            seed_predictions.append(prediction)
+            gt, pred, diag = test(test_ds, model)
+            common_gt = gt
+            seed_preds.append(pred)
             # Each run is evaluated in original physical units.
-            metric = eval({name: truth}, {name: prediction}, y_mean=y_mean, y_std=y_std)[name]
+            metric = eval({name: gt}, {name: pred}, y_mean=y_mean, y_std=y_std)[name]
             seed_metrics[name].append(metric)
             if diag:
-                diag["_final_pred"] = prediction.copy()
+                diag["_final_pred"] = pred.copy()
                 rasat_diagnostics[name] = diag
             seed_results[name].append((tr_loss[-1], va_loss[-1], best_epoch))
             if seed == N_SEEDS - 1:
                 last_losses[name] = {"train": tr_loss, "val": va_loss}
-        mean_predictions[name] = np.mean(np.stack(seed_predictions), axis=0)
+        mean_preds[name] = np.mean(np.stack(seed_preds), axis=0)
         print(f"{name}: {N_SEEDS} seeds completed; best epochs={[x[2] for x in seed_results[name]]}")
 
     print("\n===== Seed summary (best epoch; last train/val loss) =====")
@@ -185,12 +185,12 @@ if __name__ == "__main__":
             print(f"  {key}: mean={values.mean():.4f}, std={values.std():.4f}, "
                   f"min={values.min():.4f}, max={values.max():.4f}")
         if "y_base" in diag:
-            base_mae = np.mean(np.abs(common_truth - diag["y_base"]))
-            final_mae = np.mean(np.abs(common_truth - diag["_final_pred"]))
+            base_mae = np.mean(np.abs(common_gt - diag["y_base"]))
+            final_mae = np.mean(np.abs(common_gt - diag["_final_pred"]))
             print(f"  y_base MAE(z)={base_mae:.4f}; final/seed-mean MAE(z)={final_mae:.4f}")
 
     # 图中展示各随机种子预测均值，纵轴恢复到原始负荷单位
-    plot_prediction({"truth": common_truth}, mean_predictions, y_mean=y_mean, y_std=y_std)
+    plot_pred({"gt": common_gt}, mean_preds, y_mean=y_mean, y_std=y_std)
     # 训练曲线使用最后一个 seed，分别绘制 train/validation
     plot_loss_curve({k: v["train"] for k, v in last_losses.items()}, title="Train Loss (last seed)")
     plot_loss_curve({k: v["val"] for k, v in last_losses.items()}, title="Validation Loss (last seed)")

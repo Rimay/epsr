@@ -39,7 +39,7 @@ def plot_loss_curve(losses, title="Training Loss"):
     plt.show()
 
 
-def plot_prediction(gt, preds, y_mean=None, y_std=None):
+def plot_pred(gt, preds, y_mean=None, y_std=None):
     true = np.asarray(next(iter(gt.values())) if isinstance(gt, dict) else gt).reshape(-1)
     if y_mean is not None and y_std is not None:
         true = true * y_std + y_mean
@@ -49,8 +49,8 @@ def plot_prediction(gt, preds, y_mean=None, y_std=None):
         values = np.asarray(pred).reshape(-1)
         if y_mean is not None and y_std is not None:
             values = values * y_std + y_mean
-        plt.plot(values, label=f"{name} Prediction", linewidth=1.1)
-    plt.title("Prediction vs Ground Truth")
+        plt.plot(values, label=f"{name} pred", linewidth=1.1)
+    plt.title("pred vs Ground Truth")
     plt.xlabel("Test sample")
     plt.ylabel("Load (original unit)" if y_mean is not None else "Standardized Load")
     plt.legend()
