@@ -154,6 +154,7 @@ def build_experiments(features):
             }
 
     if RUN_FEATURE_ABLATION:
+        # 仅筛选 x 主输入通道；p/meta 辅助通道保持不变，名称明确标注 aux_fixed，避免误称为全模型单特征输入。
         groups = {
             "load_only": ["load"],
             "load_periodic": ["load", "dow_sin", "dow_cos", "month_sin", "month_cos"],
@@ -161,7 +162,7 @@ def build_experiments(features):
         }
         for label, names in groups.items():
             selected = [idx[n] for n in names if n in idx]
-            specs[f"RASAT_{label}"] = {
+            specs[f"RASAT_x_{label}_aux_fixed"] = {
                 "factory": lambda n=len(selected): RASATTCN(in_dim=n, variant="full"),
                 "feature_indices": selected,
             }
