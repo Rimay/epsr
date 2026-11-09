@@ -16,12 +16,17 @@ FREQ = "d"
 SEQ_LEN = 7
 P_COLS = ["lag1_z", "lag7_z"]
 TRAIN_FRAC = 0.70
-N_SEEDS = 5                 # 正式实验建议 5 次；调试时可临时设为 1
+N_SEEDS = 5
 EPOCHS = 100
 PATIENCE = 15
 BATCH_SIZE = 32
 LEARNING_RATE = 1e-3
 DATASET_NAME = "uci"
+
+# 本轮实验开关。先完成轻量对照，避免一次性引入过多实验组合。
+RUN_REGULARIZATION = True
+RUN_FEATURE_ABLATION = True
+RUN_SIMPLE_BASELINES = True
 
 
 def set_seed(seed):
@@ -35,27 +40,28 @@ def set_seed(seed):
 def forward_model(model, x, p, meta):
     if isinstance(model, RASATTCN):
         return model(x, p, meta)
-    if isinstance(model, TCN) and model.net[0].conv1.conv.in_channels > 1:
+    if isinstance(model, TCN) and model.in_ch > 1:
         return model(x)
-    # 其余原始基线保持单变量输入，避免悄悄改变既有基线定义
     return model(x[:, :, 0])
 
 
-def train(train_ds, val_ds, model):
+def train(train_ds, val_ds, model, weight_decay=0.0, feature_indices=None):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     train_loader = torch.utils.data.DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True)
     val_loader = torch.utils.data.DataLoader(val_ds, batch_size=BATCH_SIZE, shuffle=False)
     model.to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
+    optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE, weight_decay=weight_decay)
     criterion = nn.MSELoss()
     train_losses, val_losses = [], []
-    best_val, best_epoch, wait, best_state = float("inf"), -1, 0, None
+    best_val, best_epoch, best_train, wait, best_state = float("inf"), -1, float("inf"), 0, None
 
     for epoch in range(EPOCHS):
         model.train()
         total = 0.0
         for x, y, p, meta in train_loader:
             x, y, p, meta = x.to(device), y.to(device), p.to(device), meta.to(device)
+            if feature_indices is not None:
+                x = x[:, :, feature_indices]
             optimizer.zero_grad()
             out = forward_model(model, x, p, meta)
             pred = out["pred"] if isinstance(out, dict) else out
@@ -72,6 +78,8 @@ def train(train_ds, val_ds, model):
         with torch.no_grad():
             for x, y, p, meta in val_loader:
                 x, y, p, meta = x.to(device), y.to(device), p.to(device), meta.to(device)
+                if feature_indices is not None:
+                    x = x[:, :, feature_indices]
                 out = forward_model(model, x, p, meta)
                 pred = out["pred"] if isinstance(out, dict) else out
                 val_total += criterion(pred, y.squeeze(-1)).item()
@@ -79,7 +87,7 @@ def train(train_ds, val_ds, model):
         val_losses.append(val_loss)
 
         if val_loss < best_val - 1e-5:
-            best_val, best_epoch, wait = val_loss, epoch + 1, 0
+            best_val, best_epoch, best_train, wait = val_loss, epoch + 1, train_loss, 0
             best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
         else:
             wait += 1
@@ -91,10 +99,10 @@ def train(train_ds, val_ds, model):
 
     if best_state is not None:
         model.load_state_dict(best_state)
-    return model, train_losses, val_losses, best_epoch
+    return model, train_losses, val_losses, best_epoch, best_train, best_val
 
 
-def test(test_ds, model):
+def test(test_ds, model, feature_indices=None):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     loader = torch.utils.data.DataLoader(test_ds, batch_size=BATCH_SIZE, shuffle=False)
     model.to(device).eval()
@@ -103,6 +111,8 @@ def test(test_ds, model):
     with torch.no_grad():
         for x, y, p, meta in loader:
             x, y, p, meta = x.to(device), y.to(device), p.to(device), meta.to(device)
+            if feature_indices is not None:
+                x = x[:, :, feature_indices]
             out = forward_model(model, x, p, meta)
             pred = out["pred"] if isinstance(out, dict) else out
             gts.append(y.cpu().numpy().reshape(-1))
@@ -110,73 +120,140 @@ def test(test_ds, model):
             if isinstance(out, dict):
                 for key in diagnostic:
                     diagnostic[key].append(out[key].cpu().numpy().reshape(-1))
-    gt = np.concatenate(gts)
-    pred = np.concatenate(preds)
+    gt, pred = np.concatenate(gts), np.concatenate(preds)
     diagnostics = {k: np.concatenate(v) for k, v in diagnostic.items() if v}
     return gt, pred, diagnostics
 
 
-def build_models(in_dim):
-    return {
-        "TCN": lambda: TCN(in_ch=1),
-        "Multivariate_TCN": lambda: TCN(in_ch=in_dim),
-        "APCR_TCN": lambda: APCR_TCN(),
-        "DelayNet": lambda: DelayNet(),
-        "GRU": lambda: GRU(input_dim=1, hidden_dim=64, num_layers=2, pred_len=1),
-        "LSTM": lambda: LSTM(input_dim=1, hidden_dim=64, num_layers=2, pred_len=1),
-        "RASAT_TCN": lambda: RASATTCN(in_dim=in_dim, variant="full"),
-        "RASAT_no_reliability": lambda: RASATTCN(in_dim=in_dim, variant="no_reliability"),
-        "RASAT_no_gate": lambda: RASATTCN(in_dim=in_dim, variant="no_gate"),
-        "RASAT_no_periodic": lambda: RASATTCN(in_dim=in_dim, variant="no_periodic"),
+def build_experiments(features):
+    in_dim = len(features)
+    all_idx = list(range(in_dim))
+    idx = {name: i for i, name in enumerate(features)}
+    specs = {
+        "TCN": {"factory": lambda: TCN(in_ch=1)},
+        "Multivariate_TCN": {"factory": lambda: TCN(in_ch=in_dim), "feature_indices": all_idx},
+        "APCR_TCN": {"factory": lambda: APCR_TCN()},
+        "DelayNet": {"factory": lambda: DelayNet()},
+        "GRU": {"factory": lambda: GRU(input_dim=1, hidden_dim=64, num_layers=2, pred_len=1)},
+        "LSTM": {"factory": lambda: LSTM(input_dim=1, hidden_dim=64, num_layers=2, pred_len=1)},
+        "RASAT_TCN": {"factory": lambda: RASATTCN(in_dim=in_dim, variant="full"), "feature_indices": all_idx},
+        "RASAT_no_reliability": {"factory": lambda: RASATTCN(in_dim=in_dim, variant="no_reliability"), "feature_indices": all_idx},
+        "RASAT_no_gate": {"factory": lambda: RASATTCN(in_dim=in_dim, variant="no_gate"), "feature_indices": all_idx},
+        "RASAT_no_periodic": {"factory": lambda: RASATTCN(in_dim=in_dim, variant="no_periodic"), "feature_indices": all_idx},
     }
+
+    if RUN_REGULARIZATION:
+        for label, dropout, wd in [
+            ("dropout02_wd1e4", 0.2, 1e-4),
+            ("dropout03_wd1e4", 0.3, 1e-4),
+            ("dropout02_wd5e4", 0.2, 5e-4),
+        ]:
+            specs[f"RASAT_{label}"] = {
+                "factory": lambda d=dropout: RASATTCN(in_dim=in_dim, variant="full", dropout=d),
+                "feature_indices": all_idx, "weight_decay": wd,
+            }
+
+    if RUN_FEATURE_ABLATION:
+        groups = {
+            "load_only": ["load"],
+            "load_periodic": ["load", "dow_sin", "dow_cos", "month_sin", "month_cos"],
+            "load_state": ["load", "delta", "delta2", "rolling_std_7"],
+        }
+        for label, names in groups.items():
+            selected = [idx[n] for n in names if n in idx]
+            specs[f"RASAT_{label}"] = {
+                "factory": lambda n=len(selected): RASATTCN(in_dim=n, variant="full"),
+                "feature_indices": selected,
+            }
+    return specs
+
+
+def simple_baseline_predictions(test_ds):
+    """返回标准化空间预测：lag-1 persistence 与输入窗口 7 日均值。"""
+    loader = torch.utils.data.DataLoader(test_ds, batch_size=BATCH_SIZE, shuffle=False)
+    persistence, moving_average, gts = [], [], []
+    for x, y, p, meta in loader:
+        gts.append(y.numpy().reshape(-1))
+        # p 是目标时点的历史滞后特征；第 0 列 lag1_z 即前一日负荷。
+        persistence.append(p[:, 0, 0].numpy().reshape(-1))
+        # load 特征使用与 target_z 相同的训练集标准化尺度。
+        moving_average.append(x[:, :, 0].mean(dim=1).numpy().reshape(-1))
+    return np.concatenate(gts), {
+        "Persistence_lag1": np.concatenate(persistence),
+        "MovingAverage_7d": np.concatenate(moving_average),
+    }
+
+
+def print_metric_summary(seed_metrics):
+    print("\n===== Test metrics across seeds (original load unit; mean ± std) =====")
+    for name, rows in seed_metrics.items():
+        keys = ["MAE", "RMSE", "R2"]
+        values = {k: np.asarray([r[k] for r in rows], dtype=float) for k in keys}
+        print(
+            f"{name}: " +
+            " | ".join(f"{k}={values[k].mean():.5f} ± {values[k].std(ddof=1) if len(rows)>1 else 0.0:.5f}"
+                       for k in keys)
+        )
 
 
 if __name__ == "__main__":
     print(f"Loading {DATASET_NAME}, frequency={FREQ}")
     _, dfd, dfh = load_df(ds_name=DATASET_NAME)
     source = dfh if FREQ == "h" else dfd
-    frame, features, y_mean, y_std, thresholds = make_frame(
-        source, freq=FREQ, fit_frac=TRAIN_FRAC
-    )
+    frame, features, y_mean, y_std, thresholds = make_frame(source, freq=FREQ, fit_frac=TRAIN_FRAC)
     dataset = window_dataset(frame, features, seq_len=SEQ_LEN, p_cols=P_COLS)
     train_ds, val_ds, test_ds = split_dataset(dataset, ratios=(0.70, 0.15, 0.15))
     print(f"Samples total={len(dataset)}, train={len(train_ds)}, val={len(val_ds)}, test={len(test_ds)}")
     print(f"Date span={source.index.min()} -> {source.index.max()}")
     print(f"Target mean/std (train only)={y_mean:.5f}/{y_std:.5f}")
     print(f"Thresholds={thresholds}")
+    print(f"Feature order={features}")
 
-    factories = build_models(len(features))
+    experiments = build_experiments(features)
     seed_results, seed_metrics, last_losses, mean_preds, common_gt = {}, {}, {}, {}, None
     rasat_diagnostics = {}
-    for name, factory in factories.items():
-        seed_results[name] = []
-        seed_metrics[name] = []
-        seed_preds = []
+    for name, spec in experiments.items():
+        seed_results[name], seed_metrics[name], seed_preds = [], [], []
         print(f"\n========== {name} ==========")
         for seed in range(N_SEEDS):
             set_seed(2026 + seed)
-            model = factory()
-            model, tr_loss, va_loss, best_epoch = train(train_ds, val_ds, model)
-            gt, pred, diag = test(test_ds, model)
+            model = spec["factory"]()
+            model, tr_loss, va_loss, best_epoch, best_train, best_val = train(
+                train_ds, val_ds, model,
+                weight_decay=spec.get("weight_decay", 0.0),
+                feature_indices=spec.get("feature_indices"),
+            )
+            gt, pred, diag = test(test_ds, model, feature_indices=spec.get("feature_indices"))
             common_gt = gt
             seed_preds.append(pred)
-            # Each run is evaluated in original physical units.
             metric = eval({name: gt}, {name: pred}, y_mean=y_mean, y_std=y_std)[name]
             seed_metrics[name].append(metric)
             if diag:
                 diag["_final_pred"] = pred.copy()
                 rasat_diagnostics[name] = diag
-            seed_results[name].append((tr_loss[-1], va_loss[-1], best_epoch))
+            seed_results[name].append({
+                "last_train": tr_loss[-1], "last_val": va_loss[-1],
+                "best_train": best_train, "best_val": best_val, "best_epoch": best_epoch,
+            })
             if seed == N_SEEDS - 1:
                 last_losses[name] = {"train": tr_loss, "val": va_loss}
         mean_preds[name] = np.mean(np.stack(seed_preds), axis=0)
-        print(f"{name}: {N_SEEDS} seeds completed; best epochs={[x[2] for x in seed_results[name]]}")
+        print(f"{name}: {N_SEEDS} seeds completed; best epochs={[x['best_epoch'] for x in seed_results[name]]}")
 
-    print("\n===== Seed summary (best epoch; last train/val loss) =====")
+    if RUN_SIMPLE_BASELINES:
+        gt, simple_preds = simple_baseline_predictions(test_ds)
+        common_gt = gt
+        for name, pred in simple_preds.items():
+            metric = eval({name: gt}, {name: pred}, y_mean=y_mean, y_std=y_std)[name]
+            seed_metrics[name] = [metric]
+            mean_preds[name] = pred
+
+    print("\n===== Seed summary (best and last train/val loss) =====")
     for name, rows in seed_results.items():
         print(name, rows)
+    print_metric_summary(seed_metrics)
 
-    print("\n===== RASAT internal diagnostics (standardized-space outputs) =====")
+    print("\n===== RASAT internal diagnostics (standardized-space outputs; last seed) =====")
     for name, diag in rasat_diagnostics.items():
         print(name)
         for key, values in diag.items():
@@ -187,10 +264,8 @@ if __name__ == "__main__":
         if "y_base" in diag:
             base_mae = np.mean(np.abs(common_gt - diag["y_base"]))
             final_mae = np.mean(np.abs(common_gt - diag["_final_pred"]))
-            print(f"  y_base MAE(z)={base_mae:.4f}; final/seed-mean MAE(z)={final_mae:.4f}")
+            print(f"  y_base MAE(z)={base_mae:.4f}; final MAE(z)={final_mae:.4f}")
 
-    # 图中展示各随机种子预测均值，纵轴恢复到原始负荷单位
     plot_pred({"gt": common_gt}, mean_preds, y_mean=y_mean, y_std=y_std)
-    # 训练曲线使用最后一个 seed，分别绘制 train/validation
     plot_loss_curve({k: v["train"] for k, v in last_losses.items()}, title="Train Loss (last seed)")
     plot_loss_curve({k: v["val"] for k, v in last_losses.items()}, title="Validation Loss (last seed)")
