@@ -85,4 +85,4 @@ MAE/RMSE are reported in the original load unit after inverse transformation. RÂ
 
 ## 7. Important interpretation
 
-The current dataset.py feature builder was originally designed for the existing RASAT workflow and includes calendar and reliability-related columns in its returned feature list. DSR-Net does not use the old Reliability score or RASAT gate as a model component, but the baseline feature matrix may still contain the project's engineered input columns. For a strict feature-fairness study, add a separate feature-set ablation that removes reliability-derived columns if any are added to features in a future revision.
+The current dataset.py feature builder returns load, first/second differences, rolling volatility and calendar features as the model input. The RASAT reliability descriptors (r_raw, discrepancy, similarity, volatility_z) are kept in the legacy meta pathway and are not fed into DSR-Net. The DSR-Net experiment therefore removes the old Reliability score and RASAT gate from its model input and computation.
