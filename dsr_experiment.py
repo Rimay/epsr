@@ -333,7 +333,7 @@ def evaluate_run(model, test_ds, args, device, y_mean, y_std,
                          model_name, seed, params, train_seconds, best_epoch, label)
         if row is not None:
             rows.append(row)
-    return rows, yt, yp, states
+    return rows, yt, yp, states, state_probs
 
 
 def parse_args():
@@ -405,7 +405,7 @@ def main():
                         if pred.ndim == 1:
                             pred = pred.unsqueeze(-1)
                         z = torch.zeros((len(x), 3), device=x.device)
-                        z[:, 0] = 1.0
+                        z[:, 0] = 10.0
                         return {"pred": pred, "state_logits": z,
                                 "state_probs": torch.softmax(z, dim=-1),
                                 "expert_preds": None}
@@ -424,7 +424,7 @@ def main():
                 model, train_ds, val_ds, args, device, variant_for_loss, class_weights_run
             )
             histories.extend([{"seed": seed, "model": variant, **h} for h in history])
-            rows, yt, yp, states = evaluate_run(
+            rows, yt, yp, states, state_probs = evaluate_run(
                 model, test_ds, args, device, y_mean, y_std,
                 variant, seed, seconds, best_epoch
             )
@@ -436,13 +436,13 @@ def main():
                   f"params={overall['parameters']}; time={seconds:.1f}s; best_epoch={best_epoch}")
             np.savez_compressed(
                 os.path.join(args.output_dir, f"pred_{args.dataset}_{args.freq}_{variant}_seed{seed}.npz"),
-                y_true_z=yt, y_pred_z=yp, state=states
+                y_true_z=yt, y_pred_z=yp, state=states, state_probs=state_probs
             )
     results = pd.DataFrame(all_rows)
     results.to_csv(os.path.join(args.output_dir, "metrics_by_seed.csv"), index=False)
     pd.DataFrame(histories).to_csv(os.path.join(args.output_dir, "training_history.csv"), index=False)
     summary = (results.groupby(["model", "group"])
-               .agg({c: ["mean", "std"] for c in ["MAE", "RMSE", "R2", "parameters", "train_seconds", "best_epoch"]})
+               .agg({c: ["mean", "std"] for c in ["MAE", "RMSE", "R2", "state_accuracy", "state_macro_f1", "parameters", "train_seconds", "best_epoch"]})
                .reset_index())
     summary.to_csv(os.path.join(args.output_dir, "metrics_summary.csv"), index=False)
     print("\\n===== Mean ± std across seeds =====")
