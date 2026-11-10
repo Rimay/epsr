@@ -15,7 +15,7 @@ import pandas as pd
 import torch
 from torch import nn
 from torch.utils.data import Dataset, DataLoader, Subset
-from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score, accuracy_score, f1_score
 
 import dataset as data_module
 from dataset import load_df, make_frame
@@ -318,10 +318,14 @@ def metric_row(y_true_z, y_pred_z, state, y_mean, y_std, model_name, seed,
 
 def evaluate_run(model, test_ds, args, device, y_mean, y_std,
                  model_name, seed, train_seconds, best_epoch):
-    yt, yp, states, _ = predict(model, test_ds, args, device)
+    yt, yp, states, state_probs = predict(model, test_ds, args, device)
     params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     rows = [metric_row(yt, yp, states, y_mean, y_std, model_name, seed,
                        params, train_seconds, best_epoch, "Overall")]
+    state_pred = state_probs.argmax(axis=1)
+    rows[0]["state_accuracy"] = accuracy_score(states, state_pred)
+    rows[0]["state_macro_f1"] = f1_score(states, state_pred, labels=[0, 1, 2],
+                                           average="macro", zero_division=0)
     # Peak and Ramp use their target-state labels; Normal includes Valley.
     for label, code in (("Normal", 0), ("Peak", 1), ("Ramp", 2)):
         mask = states == code
@@ -427,8 +431,9 @@ def main():
             all_rows.extend(rows)
             overall = next(r for r in rows if r["group"] == "Overall")
             print(f"TEST {variant}: MAE={overall['MAE']:.5f} RMSE={overall['RMSE']:.5f} "
-                  f"R2={overall['R2']:.5f}; params={overall['parameters']}; "
-                  f"time={seconds:.1f}s; best_epoch={best_epoch}")
+                  f"R2={overall['R2']:.5f}; state_acc={overall['state_accuracy']:.4f}; "
+                  f"state_macro_f1={overall['state_macro_f1']:.4f}; "
+                  f"params={overall['parameters']}; time={seconds:.1f}s; best_epoch={best_epoch}")
             np.savez_compressed(
                 os.path.join(args.output_dir, f"pred_{args.dataset}_{args.freq}_{variant}_seed{seed}.npz"),
                 y_true_z=yt, y_pred_z=yp, state=states
