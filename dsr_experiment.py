@@ -35,7 +35,7 @@ def set_seed(seed):
 class WindowStateDataset(Dataset):
     """One-step forecasting windows; state target is read only at t+1."""
     def __init__(self, frame, feature_cols, seq_len, freq):
-        self.x, self.y, self.state = [], [], []
+        self.x, self.y, self.state, self.target_idx = [], [], [], []
         x_all = frame[feature_cols].to_numpy(dtype=np.float32)
         y_all = frame["target_z"].to_numpy(dtype=np.float32)
         # make_frame computes these labels using training-segment quantiles only.
@@ -57,10 +57,13 @@ class WindowStateDataset(Dataset):
             self.x.append(xw)
             self.y.append(target)
             self.state.append(state_all[end])
+            self.target_idx.append(end)
         self.x = torch.tensor(np.asarray(self.x), dtype=torch.float32)
         self.y = torch.tensor(np.asarray(self.y), dtype=torch.float32).view(-1, 1)
         self.state = torch.tensor(np.asarray(self.state), dtype=torch.long)
         self.freq = freq
+        self.frame_length = len(frame)
+        self.target_idx = np.asarray(self.target_idx, dtype=np.int64)
 
     def __len__(self):
         return len(self.y)
@@ -70,14 +73,21 @@ class WindowStateDataset(Dataset):
 
 
 def chronological_split(ds, train_frac=0.70, val_frac=0.15):
-    n = len(ds)
-    n_train = int(n * train_frac)
-    n_val = int(n * val_frac)
-    if min(n_train, n_val, n - n_train - n_val) <= 0:
-        raise ValueError(f"Not enough samples for split: n={n}")
-    return (Subset(ds, range(0, n_train)),
-            Subset(ds, range(n_train, n_train + n_val)),
-            Subset(ds, range(n_train + n_val, n)))
+    # Split by target timestamp, not by window count. This keeps every training
+    # target inside the same first train_frac rows used to fit normalization
+    # statistics and Peak/Ramp thresholds in make_frame.
+    n_rows = len(ds.target_idx) + (ds.target_idx[0] if len(ds.target_idx) else 0)
+    # The original frame length is passed through the dataset for exact boundaries.
+    n_rows = ds.frame_length
+    train_end = int(n_rows * train_frac)
+    val_end = int(n_rows * (train_frac + val_frac))
+    train_ids = np.flatnonzero(ds.target_idx < train_end).tolist()
+    val_ids = np.flatnonzero((ds.target_idx >= train_end) & (ds.target_idx < val_end)).tolist()
+    test_ids = np.flatnonzero(ds.target_idx >= val_end).tolist()
+    if min(len(train_ids), len(val_ids), len(test_ids)) <= 0:
+        raise ValueError(f"Not enough samples for time split: train={len(train_ids)}, "
+                         f"val={len(val_ids)}, test={len(test_ids)}")
+    return Subset(ds, train_ids), Subset(ds, val_ids), Subset(ds, test_ids)
 
 
 class CausalConv1d(nn.Module):
@@ -322,10 +332,14 @@ def evaluate_run(model, test_ds, args, device, y_mean, y_std,
     params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     rows = [metric_row(yt, yp, states, y_mean, y_std, model_name, seed,
                        params, train_seconds, best_epoch, "Overall")]
-    state_pred = state_probs.argmax(axis=1)
-    rows[0]["state_accuracy"] = accuracy_score(states, state_pred)
-    rows[0]["state_macro_f1"] = f1_score(states, state_pred, labels=[0, 1, 2],
-                                           average="macro", zero_division=0)
+    if model_name in ("state_aux", "full", "no_transition", "single_head"):
+        state_pred = state_probs.argmax(axis=1)
+        rows[0]["state_accuracy"] = accuracy_score(states, state_pred)
+        rows[0]["state_macro_f1"] = f1_score(states, state_pred, labels=[0, 1, 2],
+                                               average="macro", zero_division=0)
+    else:
+        rows[0]["state_accuracy"] = np.nan
+        rows[0]["state_macro_f1"] = np.nan
     # Peak and Ramp use their target-state labels; Normal includes Valley.
     for label, code in (("Normal", 0), ("Peak", 1), ("Ramp", 2)):
         mask = states == code
@@ -368,7 +382,6 @@ def main():
     if args.data_root:
         data_module.DATA_PATH = args.data_root.rstrip("/\\\\") + os.sep
     args.seq_len = args.seq_len or (168 if args.freq == "h" else 7)
-    p_cols = ["lag24_z", "lag168_z"] if args.freq == "h" else ["lag1_z", "lag7_z"]
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device={device}; dataset={args.dataset}; freq={args.freq}; seq_len={args.seq_len}")
     df, dfd, dfh = load_df(ds_name=args.dataset)
