@@ -141,8 +141,8 @@ class DSRNet(nn.Module):
             # DSR encoder uses multiple receptive fields and temporal attention.
             self.temporal = MultiScaleTemporalEncoder(in_dim, hidden, dropout)
             # A short raw-load path retains recent level/weekly-shape information.
-            self.history_encoder = MLP(8, hidden, hidden, dropout)
-            self.history_gate = nn.Sequential(nn.Linear(hidden * 2, hidden),
+            self.history_encoder = MLP(8, hidden, hidden * 2, dropout)
+            self.history_gate = nn.Sequential(nn.Linear(hidden * 4, hidden * 2),
                                               nn.Sigmoid())
             self.state_encoder = MLP(len(state_indices), state_hidden,
                                      state_hidden, dropout)
