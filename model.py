@@ -1,14 +1,15 @@
-"""DSR-Net: Dynamic State-aware Routing Network（动态状态感知路由网络）。
+"""DSR-Net v2: Multi-scale State-aware Routing Network.
 
-结构总览（输入历史窗口 x，形状 [B, L, F]）：
-    1. TCNEncoder 提取时序表征 h [B, hidden]；
-    2. 非 tcn 变体：取末时刻的状态描述符经 state_encoder 编码后与 h 拼接；
-    3. forecast_head 输出预测 [B, 1]；
-    4. 含状态分类的变体额外输出 state_logits/state_probs；
-    5. 含专家路由的变体（full/no_transition）：每个负载状态一个专家头，
-       用 state_probs 对各专家预测加权融合。
+The ordinary TCN baseline is intentionally retained as a conventional reference.
+DSR variants add:
+  1) multi-scale causal temporal encoding (parallel dilation paths),
+  2) attention pooling over the history window,
+  3) a compact autoregressive/seasonal history branch,
+  4) gated fusion with explicit dynamic-state descriptors,
+  5) state-aware expert routing (Full / No_transition).
 
-设计约束：推理时绝不使用未来信息；状态描述符只取自历史窗口。
+Only historical inputs enter forward(); target-time state labels are supervision
+and evaluation labels only.
 """
 import torch
 from torch import nn
@@ -16,22 +17,22 @@ import torch.nn.functional as F
 
 
 class CausalConv1d(nn.Module):
-    """因果一维卷积：只看当前时刻及更早，不泄露未来。"""
     def __init__(self, in_channels, out_channels, kernel_size=3, dilation=1):
         super().__init__()
-        self.left_pad = (kernel_size - 1) * dilation  # 仅左侧补零，保持时间长度不变
-        self.conv = nn.Conv1d(in_channels, out_channels, kernel_size, dilation=dilation)
+        self.left_pad = (kernel_size - 1) * dilation
+        self.conv = nn.Conv1d(in_channels, out_channels, kernel_size,
+                              dilation=dilation)
 
     def forward(self, x):
         return self.conv(F.pad(x, (self.left_pad, 0)))
 
 
 class TemporalBlock(nn.Module):
-    """TCN 基本块：两层因果卷积 + BatchNorm + GELU + 残差连接。"""
+    """Conventional residual TCN block used by the baseline."""
     def __init__(self, in_channels, hidden, dilation, dropout):
         super().__init__()
-        self.conv1 = CausalConv1d(in_channels, hidden, kernel_size=3, dilation=dilation)
-        self.conv2 = CausalConv1d(hidden, hidden, kernel_size=3, dilation=dilation)
+        self.conv1 = CausalConv1d(in_channels, hidden, 3, dilation)
+        self.conv2 = CausalConv1d(hidden, hidden, 3, dilation)
         self.norm1 = nn.BatchNorm1d(hidden)
         self.norm2 = nn.BatchNorm1d(hidden)
         self.skip = nn.Conv1d(in_channels, hidden, 1) if in_channels != hidden else nn.Identity()
@@ -44,22 +45,71 @@ class TemporalBlock(nn.Module):
 
 
 class TCNEncoder(nn.Module):
-    """三层膨胀因果卷积（dilation=1/2/4），取最后时刻的表征。"""
+    """Plain TCN baseline; do not silently upgrade the baseline itself."""
     def __init__(self, in_channels, hidden=32, dropout=0.2):
         super().__init__()
         self.net = nn.Sequential(
-            TemporalBlock(in_channels, hidden, dilation=1, dropout=dropout),
-            TemporalBlock(hidden, hidden, dilation=2, dropout=dropout),
-            TemporalBlock(hidden, hidden, dilation=4, dropout=dropout),
+            TemporalBlock(in_channels, hidden, 1, dropout),
+            TemporalBlock(hidden, hidden, 2, dropout),
+            TemporalBlock(hidden, hidden, 4, dropout),
         )
 
     def forward(self, x):
-        """x: [B, L, F] → [B, hidden]（先转成通道优先，再取末时刻）。"""
         return self.net(x.transpose(1, 2))[:, :, -1]
 
 
+class MultiScaleBlock(nn.Module):
+    """Parallel causal receptive fields followed by learned channel mixing."""
+    def __init__(self, in_channels, hidden, dropout):
+        super().__init__()
+        branch = max(8, hidden // 2)
+        self.paths = nn.ModuleList([
+            nn.Sequential(CausalConv1d(in_channels, branch, 3, d),
+                          nn.BatchNorm1d(branch), nn.GELU())
+            for d in (1, 2, 4)
+        ])
+        self.merge = nn.Conv1d(branch * 3, hidden, 1)
+        self.norm = nn.BatchNorm1d(hidden)
+        self.skip = nn.Conv1d(in_channels, hidden, 1) if in_channels != hidden else nn.Identity()
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x):
+        multi = torch.cat([path(x) for path in self.paths], dim=1)
+        h = self.dropout(F.gelu(self.norm(self.merge(multi))))
+        return F.gelu(h + self.skip(x))
+
+
+class AttentionPool(nn.Module):
+    """Content-based temporal pooling; all positions are historical."""
+    def __init__(self, hidden):
+        super().__init__()
+        self.score = nn.Sequential(nn.Linear(hidden, hidden // 2),
+                                   nn.Tanh(), nn.Linear(hidden // 2, 1))
+
+    def forward(self, sequence):
+        # sequence: [B, L, H]
+        weights = torch.softmax(self.score(sequence).squeeze(-1), dim=1)
+        return torch.sum(sequence * weights.unsqueeze(-1), dim=1)
+
+
+class MultiScaleTemporalEncoder(nn.Module):
+    def __init__(self, in_channels, hidden=32, dropout=0.2):
+        super().__init__()
+        self.blocks = nn.Sequential(
+            MultiScaleBlock(in_channels, hidden, dropout),
+            MultiScaleBlock(hidden, hidden, dropout),
+            MultiScaleBlock(hidden, hidden, dropout),
+        )
+        self.pool = AttentionPool(hidden)
+        self.norm = nn.LayerNorm(hidden * 2)
+
+    def forward(self, x):
+        seq = self.blocks(x.transpose(1, 2)).transpose(1, 2)
+        # Last-state representation preserves recency; attention captures context.
+        return self.norm(torch.cat([seq[:, -1], self.pool(seq)], dim=-1))
+
+
 class MLP(nn.Module):
-    """两层隐层 + 线性输出层的通用 MLP 头。"""
     def __init__(self, in_dim, hidden, out_dim, dropout):
         super().__init__()
         self.net = nn.Sequential(
@@ -73,15 +123,7 @@ class MLP(nn.Module):
 
 
 class DSRNet(nn.Module):
-    """DSR-Net 主模型。
-    变体说明（VARIANTS）：
-        tcn            纯 TCN 基线：只喂 load 单通道，无状态/路由分支
-        state          TCN + 状态描述符拼接
-        state_aux      state + 状态分类辅助任务（计入 state 损失）
-        full           state_aux + 专家路由（计入 expert 损失）
-        no_transition  与 full 同结构，但训练时不计入 state 损失（用于消融）
-    """
-
+    """DSR-Net v2 with a fixed interface compatible with the experiment runner."""
     VARIANTS = {"tcn", "state", "state_aux", "full", "no_transition"}
 
     def __init__(self, in_dim, state_indices, variant="full",
@@ -92,39 +134,53 @@ class DSRNet(nn.Module):
         self.variant = variant
         self.state_indices = tuple(state_indices)
 
-        self.temporal = TCNEncoder(in_dim, hidden, dropout)
         if variant == "tcn":
+            self.temporal = TCNEncoder(in_dim, hidden, dropout)
             fused_dim = hidden
         else:
-            self.state_encoder = MLP(len(state_indices), state_hidden, state_hidden, dropout)
-            fused_dim = hidden + state_hidden
+            # DSR encoder uses multiple receptive fields and temporal attention.
+            self.temporal = MultiScaleTemporalEncoder(in_dim, hidden, dropout)
+            # A short raw-load path retains recent level/weekly-shape information.
+            self.history_encoder = MLP(8, hidden, hidden, dropout)
+            self.history_gate = nn.Sequential(nn.Linear(hidden * 2, hidden),
+                                              nn.Sigmoid())
+            self.state_encoder = MLP(len(state_indices), state_hidden,
+                                     state_hidden, dropout)
+            fused_dim = hidden * 2 + state_hidden
 
         self.forecast_head = MLP(fused_dim, hidden, 1, dropout)
-        self.state_classifier = (MLP(fused_dim, hidden, num_states, dropout)
-                                 if variant in {"state_aux", "full", "no_transition"} else None)
-        self.experts = (nn.ModuleList(MLP(fused_dim, hidden, 1, dropout) for _ in range(num_states))
-                        if variant in {"full", "no_transition"} else None)
+        self.state_classifier = (
+            MLP(fused_dim, hidden, num_states, dropout)
+            if variant in {"state_aux", "full", "no_transition"} else None
+        )
+        self.experts = (
+            nn.ModuleList([MLP(fused_dim, hidden, 1, dropout)
+                           for _ in range(num_states)])
+            if variant in {"full", "no_transition"} else None
+        )
 
     def forward(self, x):
-        """x: [B, L, F]（tcn 变体只传 load 单通道，见 main.select_inputs）。
-
-        返回 dict：
-            pred            [B, 1]  最终预测
-            representation  [B, fused_dim] 融合表征
-            state_logits / state_probs  仅状态分类变体返回
-            expert_preds    [B, num_states] 仅路由变体返回
-        """
-        feat = self.temporal(x)  # [B, hidden]
-        if self.variant != "tcn":
-            state_feat = self.state_encoder(x[:, -1, list(self.state_indices)])  # 仅末时刻描述符
-            feat = torch.cat([feat, state_feat], dim=-1)
+        # x: [B, L, F]; no future labels or future observations are consumed.
+        if self.variant == "tcn":
+            feat = self.temporal(x)
+        else:
+            temporal_feat = self.temporal(x)
+            # Adaptive pooling makes this branch work for both daily and hourly windows.
+            load_history = F.adaptive_avg_pool1d(
+                x[:, :, :1].transpose(1, 2), 8
+            ).squeeze(1)
+            history_feat = self.history_encoder(load_history)
+            gate = self.history_gate(torch.cat([temporal_feat, history_feat], dim=-1))
+            fused_temporal = gate * temporal_feat + (1.0 - gate) * history_feat
+            state_feat = self.state_encoder(x[:, -1, list(self.state_indices)])
+            feat = torch.cat([fused_temporal, state_feat], dim=-1)
 
         logits = self.state_classifier(feat) if self.state_classifier is not None else None
         probs = torch.softmax(logits, dim=-1) if logits is not None else None
 
         if self.experts is not None:
-            expert = torch.cat([head(feat) for head in self.experts], dim=1)  # [B, num_states]
-            pred = (expert * probs).sum(dim=1, keepdim=True)  # 按状态概率加权融合
+            expert = torch.cat([head(feat) for head in self.experts], dim=1)
+            pred = torch.sum(expert * probs, dim=1, keepdim=True)
         else:
             expert = None
             pred = self.forecast_head(feat)
@@ -135,5 +191,3 @@ class DSRNet(nn.Module):
         if expert is not None:
             out["expert_preds"] = expert
         return out
-
-
