@@ -2,3 +2,7 @@ __pycache__/
 .vscode/
 venv311/
 data/
+outputs/dsr/uci_d/*.npz
+outputs/dsr/uci_d/*.pt
+outputs/dsr/gefcom2014/*.npz
+outputs/dsr/gefcom2014/*.pt

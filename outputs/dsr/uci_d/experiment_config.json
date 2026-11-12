@@ -1,0 +1,67 @@
+{
+  "dataset": "uci",
+  "freq": "d",
+  "data_root": "data",
+  "output_dir": "outputs/dsr",
+  "seq_len": 28,
+  "epochs": 2,
+  "patience": 15,
+  "batch_size": 32,
+  "lr": 0.001,
+  "weight_decay": 0.0001,
+  "dropout": 0.2,
+  "lambda_state": 0.15,
+  "lambda_expert": 0.2,
+  "seeds": [
+    1
+  ],
+  "models": [
+    "tcn"
+  ],
+  "num_workers": 0,
+  "cpu": false,
+  "device": "cpu",
+  "features": [
+    "load",
+    "delta",
+    "delta2",
+    "rolling_std_7",
+    "dow_sin",
+    "dow_cos",
+    "month_sin",
+    "month_cos"
+  ],
+  "metadata": {
+    "train_end": 1009,
+    "val_end": 1225,
+    "peak_threshold": 1.621301449930459,
+    "ramp_threshold": 0.6027718498571543,
+    "y_mean": 1.0870836864134072,
+    "y_std": 0.45069220485637074,
+    "feature_mean": {
+      "load": 1.0870836864134072,
+      "delta": -0.0015218169911329698,
+      "delta2": 0.0005700399730926599,
+      "rolling_std_7": 0.26911003914606774,
+      "dow_sin": -0.000966231825750063,
+      "dow_cos": -0.0002205361089755627,
+      "month_sin": 0.07007254110789754,
+      "month_cos": -0.02658127658641115
+    },
+    "feature_std": {
+      "load": 0.45069220485637074,
+      "delta": 0.3902631335827239,
+      "delta2": 0.6319308535294877,
+      "rolling_std_7": 0.1454425808039766,
+      "dow_sin": 0.7077725668437299,
+      "dow_cos": 0.7071414808232793,
+      "month_sin": 0.6881188755141189,
+      "month_cos": 0.7224002901597348
+    },
+    "state_names": [
+      "Normal",
+      "Peak",
+      "Ramp"
+    ]
+  }
+}

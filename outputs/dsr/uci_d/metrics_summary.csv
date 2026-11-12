@@ -1,0 +1,4 @@
+,MAE,MAE,RMSE,RMSE,R2,R2,MAPE_pct,MAPE_pct,seed,seed,best_epoch,best_epoch,best_val_mse,best_val_mse,Normal_MAE,Normal_MAE,Normal_RMSE,Normal_RMSE,Peak_MAE,Peak_MAE,Peak_RMSE,Peak_RMSE,Ramp_MAE,Ramp_MAE,Ramp_RMSE,Ramp_RMSE
+,mean,std,mean,std,mean,std,mean,std,mean,std,mean,std,mean,std,mean,std,mean,std,mean,std,mean,std,mean,std,mean,std
+model,,,,,,,,,,,,,,,,,,,,,,,,,,
+tcn,0.16682274639606476,,0.2133321613073349,,0.5197319388389587,,23.036287307739258,,1.0,,2.0,,0.3471636747320493,,0.15845131874084473,,0.19868646562099457,,0.7141313552856445,,0.7141313552856445,,0.47916775941848755,,0.48546352982521057,
