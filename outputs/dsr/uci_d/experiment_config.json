@@ -4,7 +4,7 @@
   "data_root": "data",
   "output_dir": "outputs/dsr",
   "seq_len": 28,
-  "epochs": 2,
+  "epochs": 100,
   "patience": 15,
   "batch_size": 32,
   "lr": 0.001,
@@ -13,10 +13,18 @@
   "lambda_state": 0.15,
   "lambda_expert": 0.2,
   "seeds": [
-    1
+    11,
+    22,
+    33,
+    44,
+    55
   ],
   "models": [
-    "tcn"
+    "tcn",
+    "state",
+    "state_aux",
+    "full",
+    "no_transition"
   ],
   "num_workers": 0,
   "cpu": false,

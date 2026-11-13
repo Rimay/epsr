@@ -33,7 +33,7 @@ def parse_args():
     p.add_argument("--freq", choices=["h", "d"], default="d", help="采样频率：h=小时级，d=天级")
     p.add_argument("--data-root", default="data", help="原始数据根目录")
     p.add_argument("--output-dir", default="outputs/dsr", help="结果输出目录")
-    p.add_argument("--seq-len", type=int, default=None, help="历史窗口长度；缺省 h=168、d=28")
+    p.add_argument("--seq-len", type=int, default=28, help="历史窗口长度；缺省 h=168、d=28")
     p.add_argument("--epochs", type=int, default=100, help="最大训练轮数")
     p.add_argument("--patience", type=int, default=15, help="早停耐心轮数")
     p.add_argument("--batch-size", type=int, default=32)
@@ -42,11 +42,9 @@ def parse_args():
     p.add_argument("--dropout", type=float, default=0.2)
     p.add_argument("--lambda-state", type=float, default=0.15, help="状态分类辅助损失权重")
     p.add_argument("--lambda-expert", type=float, default=0.2, help="专家预测辅助损失权重")
-    p.add_argument("--seeds", type=int, nargs="+", default=[11, 22, 33, 44, 55],
-                   help="随机种子列表，每个种子各训练一遍")
+    p.add_argument("--seeds", nargs="+", type=int, default=[11, 22, 33, 44, 55], help="随机种子列表，每个种子各训练一遍")
     p.add_argument("--models", nargs="+", choices=sorted(DSRNet.VARIANTS),
-                   default=["tcn", "state", "state_aux", "full", "no_transition"],
-                   help="要训练的模型变体")
+                   default=["tcn", "state", "state_aux", "full", "no_transition"], help="要训练的模型变体")
     p.add_argument("--num-workers", type=int, default=0)
     p.add_argument("--cpu", action="store_true", help="强制使用 CPU")
     return p.parse_args()
@@ -202,14 +200,12 @@ def train_variant(variant, seed, parts, features, meta, args, out_dir, device):
     if best_state is None:
         raise RuntimeError(f"No best checkpoint for {variant}, seed {seed}")
     model.load_state_dict(best_state)
-
     result = predict(model, loaders[2], variant, device, meta)
     metrics = score_result(result, variant, seed, best_epoch, best_val)
     np.savez_compressed(out_dir / f"pred_{variant}_seed{seed}.npz",
                         **{k: v for k, v in result.items() if v is not None})
     torch.save({"state_dict": model.state_dict(), "variant": variant, "seed": seed,
-                "features": features, "metadata": meta},
-               out_dir / f"best_{variant}_seed{seed}.pt")
+                "features": features, "metadata": meta}, out_dir / f"best_{variant}_seed{seed}.pt")
     return metrics, history
 
 
