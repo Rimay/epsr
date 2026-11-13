@@ -167,7 +167,8 @@ def train_variant(variant, seed, parts, features, meta, args, out_dir, device):
                   "rolling_std_24" if args.freq == "h" else "rolling_std_7"]
     state_indices = [features.index(c) for c in state_cols] if variant != "tcn" else [0]
     in_dim = 1 if variant == "tcn" else len(features)
-    model = DSRNet(in_dim, state_indices, variant=variant, dropout=args.dropout,\n                   future_dim=len(meta.get("calendar_features", []))).to(device)
+    model = DSRNet(in_dim, state_indices, variant=variant, dropout=args.dropout,
+                   future_dim=len(meta.get("calendar_features", []))).to(device)
 
     loaders = []
     for i, ds in enumerate(parts):
