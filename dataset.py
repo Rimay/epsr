@@ -122,7 +122,7 @@ def make_frame(source, freq="d", train_fraction=0.70):
         "y_std": y_std,
         "feature_mean": x_mean.to_dict(),
         "feature_std": x_std.to_dict(),
-        "state_names": ["Normal", "Peak", "Ramp"],
+        "state_names": ["Normal", "Peak", "Ramp"],\n        "calendar_features": calendar,
     }
     return frame, features, meta
 
@@ -139,7 +139,7 @@ class WindowDataset(Dataset):
     只保留特征窗口与目标均无 NaN 的样本。
     """
 
-    def __init__(self, frame, features, seq_len=168):
+    def __init__(self, frame, features, seq_len=168, future_features=None):
         if seq_len < 2:
             raise ValueError("seq_len must be >= 2")
         values = frame[list(features)].to_numpy(dtype=np.float32)
@@ -147,7 +147,7 @@ class WindowDataset(Dataset):
         states = frame["state"].to_numpy(dtype=np.int64)
 
         self.target_indices = []
-        xs, ys, ss = [], [], []
+        xs, ys, ss, fs = [], [], [], []
         for t in range(seq_len, len(frame)):
             window = values[t - seq_len:t]
             if np.isfinite(window).all() and np.isfinite(targets[t]):
@@ -167,7 +167,7 @@ class WindowDataset(Dataset):
         return len(self.y)
 
     def __getitem__(self, i):
-        return self.x[i], self.y[i], self.states[i]
+        return self.x[i], self.y[i], self.states[i], self.future[i]
 
 
 def chronological_split(dataset, train_end, val_end):
