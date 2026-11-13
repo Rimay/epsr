@@ -6,7 +6,7 @@ This branch replaces the previous state-classification / mixture-of-experts desi
 
 - `tcn`: unchanged univariate TCN reference.
 - `lag_tcn`: multivariate TCN + explicit recent/weekly lag profile + persistence residual connection.
-- `calendar_lag_tcn`: `lag_tcn` plus a separate encoder for calendar covariates known at the target timestamp (hour/day-of-week or day-of-week/month) and a compact history-shape branch.
+- `calendar_lag_tcn`: `lag_tcn` plus a separate encoder for calendar covariates known at the target timestamp (hour/day-of-week or day-of-week/month).
 
 The forecast is parameterized as the latest observed standardized load plus a learned correction. State labels are retained only for post-hoc stratified evaluation; they are not model inputs, auxiliary targets, or routing signals.
 
