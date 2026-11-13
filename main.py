@@ -44,7 +44,7 @@ def parse_args():
     p.add_argument("--lambda-expert", type=float, default=0.2, help="专家预测辅助损失权重")
     p.add_argument("--seeds", nargs="+", type=int, default=[11, 22, 33, 44, 55], help="随机种子列表，每个种子各训练一遍")
     p.add_argument("--models", nargs="+", choices=sorted(DSRNet.VARIANTS),
-                   default=["tcn", "state", "state_aux", "full", "no_transition"], help="要训练的模型变体")
+                   default=["tcn", "lag_tcn", "calendar_lag_tcn"], help="要训练的模型变体")
     p.add_argument("--num-workers", type=int, default=0)
     p.add_argument("--cpu", action="store_true", help="强制使用 CPU")
     return p.parse_args()
@@ -69,11 +69,11 @@ def run_epoch(model, data, variant, optimizer, device, args, training):
     sums = {"total": 0.0, "forecast": 0.0, "state": 0.0, "expert": 0.0}
     n_batches = 0
 
-    for x, y, state in data:
+    for x, y, state, future_cov in data:
         x = select_inputs(x.to(device), variant)
-        y, state = y.to(device), state.to(device)
+        y, state, future_cov = y.to(device), state.to(device), future_cov.to(device)
         with torch.set_grad_enabled(training):
-            out = model(x)
+            out = model(x, future_cov)
             forecast_loss = mse(out["pred"], y)
             state_loss = (ce(out["state_logits"], state)
                           if "state_logits" in out else forecast_loss.new_zeros(()))
@@ -110,8 +110,8 @@ def predict(model, data, variant, device, meta):
     """在给定数据集上预测，并把标准化输出反变换回原始量纲。"""
     model.eval()
     ys, ps, ss, probs = [], [], [], []
-    for x, y, state in data:
-        out = model(select_inputs(x.to(device), variant))
+    for x, y, state, future_cov in data:
+        out = model(select_inputs(x.to(device), variant), future_cov.to(device))
         ys.append(y.numpy().ravel())
         ps.append(out["pred"].cpu().numpy().ravel())
         ss.append(state.numpy().ravel())
@@ -167,7 +167,7 @@ def train_variant(variant, seed, parts, features, meta, args, out_dir, device):
                   "rolling_std_24" if args.freq == "h" else "rolling_std_7"]
     state_indices = [features.index(c) for c in state_cols] if variant != "tcn" else [0]
     in_dim = 1 if variant == "tcn" else len(features)
-    model = DSRNet(in_dim, state_indices, variant=variant, dropout=args.dropout).to(device)
+    model = DSRNet(in_dim, state_indices, variant=variant, dropout=args.dropout,\n                   future_dim=len(meta.get("calendar_features", []))).to(device)
 
     loaders = []
     for i, ds in enumerate(parts):
@@ -224,7 +224,7 @@ def main():
 
     _, dfd, dfh = load_df(args.dataset, args.data_root)
     frame, features, meta = make_frame(dfh if args.freq == "h" else dfd, args.freq)
-    dataset = WindowDataset(frame, features, seq_len)
+    dataset = WindowDataset(frame, features, seq_len, meta.get("calendar_features", []))
     parts = chronological_split(dataset, meta["train_end"], meta["val_end"])
     print(f"device={device}; windows={len(dataset)}; split=" + "/".join(str(len(x)) for x in parts))
     print(f"features={features}; peak={meta['peak_threshold']:.5g}; ramp={meta['ramp_threshold']:.5g}")
