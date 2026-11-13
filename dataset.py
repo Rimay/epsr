@@ -122,7 +122,8 @@ def make_frame(source, freq="d", train_fraction=0.70):
         "y_std": y_std,
         "feature_mean": x_mean.to_dict(),
         "feature_std": x_std.to_dict(),
-        "state_names": ["Normal", "Peak", "Ramp"],\n        "calendar_features": calendar,
+        "state_names": ["Normal", "Peak", "Ramp"],
+        "calendar_features": calendar,
     }
     return frame, features, meta
 
