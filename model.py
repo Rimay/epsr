@@ -61,13 +61,9 @@ class DSRNet(nn.Module):
         # Six lag taps + two pooled history statistics = fixed 8-D profile.
         self.lag_encoder = nn.Sequential(nn.Linear(8, hidden), nn.GELU(),
                                          nn.Dropout(dropout), nn.Linear(hidden, hidden), nn.GELU())
-        self.shape_encoder = (nn.Sequential(nn.Linear(8, hidden // 2), nn.GELU())
-                              if variant == "calendar_lag_tcn" else None)
         self.future_encoder = (nn.Sequential(nn.Linear(future_dim, hidden // 2), nn.GELU())
                                if variant == "calendar_lag_tcn" and future_dim > 0 else None)
         fused = hidden * 2
-        if self.shape_encoder is not None:
-            fused += hidden // 2
         if self.future_encoder is not None:
             fused += hidden // 2
         self.head = nn.Sequential(nn.Linear(fused, hidden), nn.GELU(),
@@ -87,9 +83,6 @@ class DSRNet(nn.Module):
         taps = [load[:, -k:-k+1] if k > 1 else load[:, -1:] for k in offsets]
         lag_profile = torch.cat(taps + [F.adaptive_avg_pool1d(load.unsqueeze(1), 2).squeeze(1)], dim=1)
         parts = [temporal, self.lag_encoder(lag_profile)]
-        if self.shape_encoder is not None:
-            shape = F.adaptive_avg_pool1d(load.unsqueeze(1), 8).squeeze(1)
-            parts.append(self.shape_encoder(shape))
         if self.future_encoder is not None:
             if future_cov is None:
                 raise ValueError("future_cov is required for calendar_lag_tcn")
