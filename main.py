@@ -32,7 +32,7 @@ def parse_args():
     p.add_argument("--dataset", choices=["uci", "GEFCom2014"], default="uci", help="数据集名称")
     p.add_argument("--freq", choices=["h", "d"], default="d", help="采样频率：h=小时级，d=天级")
     p.add_argument("--data-root", default="data", help="原始数据根目录")
-    p.add_argument("--output-dir", default="outputs/dsr", help="结果输出目录")
+    p.add_argument("--output-dir", default="outputs/lag_residual", help="结果输出目录")
     p.add_argument("--seq-len", type=int, default=28, help="历史窗口长度；缺省 h=168、d=28")
     p.add_argument("--epochs", type=int, default=100, help="最大训练轮数")
     p.add_argument("--patience", type=int, default=15, help="早停耐心轮数")
@@ -143,6 +143,7 @@ def score_result(result, variant, seed, best_epoch, best_val):
 
     for label, state_id in (("Normal", 0), ("Peak", 1), ("Ramp", 2)):
         mask = result["state"] == state_id
+        metrics[label + "_N"] = int(mask.sum())
         if mask.any():
             sub = regression_metrics(result["y_true"][mask], result["y_pred"][mask])
             metrics[label + "_MAE"] = sub["MAE"]
