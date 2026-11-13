@@ -143,6 +143,9 @@ class WindowDataset(Dataset):
         if seq_len < 2:
             raise ValueError("seq_len must be >= 2")
         values = frame[list(features)].to_numpy(dtype=np.float32)
+        self.future_features = list(future_features or [])
+        future_values = (frame[self.future_features].to_numpy(dtype=np.float32)
+                         if self.future_features else np.zeros((len(frame), 0), dtype=np.float32))
         targets = frame["target_z"].to_numpy(dtype=np.float32)
         states = frame["state"].to_numpy(dtype=np.int64)
 
@@ -154,6 +157,7 @@ class WindowDataset(Dataset):
                 xs.append(window)
                 ys.append([targets[t]])
                 ss.append(states[t])
+                fs.append(future_values[t])
                 self.target_indices.append(t)
         if not xs:
             raise ValueError("No valid windows; check data and seq_len")
@@ -161,6 +165,7 @@ class WindowDataset(Dataset):
         self.x = torch.tensor(np.asarray(xs), dtype=torch.float32)
         self.y = torch.tensor(np.asarray(ys), dtype=torch.float32)
         self.states = torch.tensor(np.asarray(ss), dtype=torch.long)
+        self.future = torch.tensor(np.asarray(fs), dtype=torch.float32)
         self.target_indices = np.asarray(self.target_indices, dtype=np.int64)
 
     def __len__(self):
