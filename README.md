@@ -19,7 +19,7 @@ Chronological 70/15/15 target-time split. Feature scaling is fitted on the train
 ```bash
 pip install -r requirements.txt
 python main.py --dataset uci --freq d --models tcn lag_tcn calendar_lag_tcn --seeds 11 22 33 44 55
-python vis.py outputs/dsr/uci_d
+python vis.py outputs/lag_residual/uci_d
 ```
 
 GEFCom2014 hourly:
